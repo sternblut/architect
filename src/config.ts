@@ -31,6 +31,8 @@ export const PROJECTS = join(HOME, ".claude", "projects");
 
 // keychain — запись связки ключей с паролем посетителя (аккаунт admin) для закрытых сайтов; читает только процесс снимка.
 export type Site = { name: string; url: string; repo?: string; keychain?: string };
+export type AskKind = "delete" | "main" | "deploy" | "spend" | "people";
+
 export type Config = {
   keychainService: string;
   keychainAccount: string;
@@ -45,6 +47,7 @@ export type Config = {
   spendPattern?: string; // свои платные команды (регулярное выражение): шлагбаум спрашивает о них как о трате
   repoPrefix?: string; // общий префикс имён репозиториев: в карточках проект называется без него
   monitor?: { width: number; height: number }; // окно своего монитора для снимков страниц
+  ask?: AskKind[]; // о чём шлагбаум спрашивает владельца; без поля — обо всех пяти. Хостинг закрыт всегда
   richMessages?: boolean; // rich-сообщения Bot API 10.1+; false — старый HTML
   voice?: { whisper: string; model: string; language: string; vocab?: string };
   relay?: { url: string }; // дежурный в облаке, пока Mac спит (relay/, src/relay.ts); без него бот во сне молчит
