@@ -1,0 +1,10 @@
+{
+  "name": "architect",
+  "displayName": "Architect",
+  "description": "Run Claude Code on this Mac from Telegram: the architect starts sessions in the right folders, passes their questions to you and your answers back, and asks before anything irreversible.",
+  "author": { "name": "sternblut", "url": "https://github.com/sternblut" },
+  "homepage": "https://github.com/sternblut/architect",
+  "repository": "https://github.com/sternblut/architect",
+  "license": "MIT",
+  "keywords": ["telegram", "remote", "sessions", "agents", "iphone"]
+}

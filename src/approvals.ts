@@ -1,0 +1,348 @@
+// Решения владельца: «да/нет» на необратимое и ответы на вопросы сессий. Кнопки одноразовые: после решения гаснут на месте с подписью.
+// Запрос разрешения — бриф решения (brief.ts): что изменится, можно ли вернуть, совет архитектора; сама команда — под «Подробнее».
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { decisionBrief, sessionName, type Brief, type More } from "./brief";
+import { ARCH_HOME, LOGS, STATE, tr } from "./config";
+import { mdEsc } from "./md";
+import type { Button, Incoming, Telegram } from "./telegram";
+import { clip, hhmm, log, randomId, readJson, scrub, writeJson } from "./util";
+
+export type Question = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
+// «Сначала покажи» / «Сначала объясни»: запрос снят, сессии — tell, она спросит снова
+export type Decision = "yes" | "no" | "timeout" | { tell: string };
+
+type Pending =
+  | { kind: "confirm"; resolve: (v: Decision) => void; messageId: number; md: string; more?: More; deploy?: boolean; rule?: Brief["rule"]; action: string; source: string; summary: string; since: number }
+  | { kind: "question"; resolve: (v: string | null) => void; messageId: number; md: string; q: Question; picked: Set<number>; source: string; summary: string; since: number };
+
+const done = (label: string): Button[][] => [[{ text: label, disabled: true }]]; // погасшая кнопка-подпись вместо прежних
+const plain = (md: string) => md.replace(/\\(.)/g, "$1"); // для «Пульта»: без экранирования Markdown
+const RECOMMENDED = /\s*\((recommended|рекомендую|рекомендуется|советую)\)\s*$/i; // так AskUserQuestion помечает совет сессии
+const quote = (s: string) => tr(`«${s}»`, `“${s}”`);
+
+// Цветом выделена только кнопка, к которой склоняется совет; без совета все кнопки нейтральные — красная «Отклонить» читалась бы как тревога.
+// «Да» — глаголом из первой строки («Выложить», «Удалить»): нажимая, он видит, что делает;
+// первая строка не с глагола — «Разрешить». По-английски глагол — из списка: описание («Running tests») глаголом не станет.
+const VERBS_EN =
+  /^(Add|Apply|Approve|Archive|Build|Change|Clean|Clear|Clone|Commit|Copy|Create|Delete|Deploy|Download|Edit|Execute|Export|Fetch|Import|Install|Kill|Launch|Merge|Move|Open|Overwrite|Publish|Pull|Push|Release|Reload|Remove|Rename|Reset|Restart|Restore|Revert|Run|Send|Set|Spend|Start|Stop|Sync|Tag|Trust|Update|Upload|Write)(?=\s|$)/;
+const yesVerb = (head: string) => tr(head.match(/^(\p{Lu}\p{Ll}+(?:ть|ти|чь)(?:ся)?)(?=\s|$)/u)?.[1], head.match(VERBS_EN)?.[1]);
+// own — глагол действия, написанного словами (свои инструменты архитектора): «Остановить «X»?» — кнопка «Остановить»,
+// а не «Разрешить»
+// Правила владельца «без вопросов»: кнопка на карточке — его «да» заранее для того же вида действий в том же проекте,
+// чтобы привычные действия не ждали подтверждения каждый раз.
+export type Rule = NonNullable<Brief["rule"]> & { at: number };
+const RULES = () => join(STATE, "rules.json");
+export const rules = {
+  list: (): Rule[] => readJson<Rule[]>(RULES(), []),
+  match: (r: NonNullable<Brief["rule"]>) => rules.list().find((x) => x.kind === r.kind && x.project === r.project),
+  add(r: NonNullable<Brief["rule"]>) {
+    if (!rules.match(r)) writeJson(RULES(), [...rules.list(), { kind: r.kind, project: r.project, at: Date.now() }]);
+  },
+  remove(r: NonNullable<Brief["rule"]>) {
+    writeJson(RULES(), rules.list().filter((x) => !(x.kind === r.kind && x.project === r.project)));
+  },
+};
+const day = (t: number) => new Date(t).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+export const ruleText = (r: NonNullable<Brief["rule"]>) =>
+  r.kind === "deploy" ? tr(`выкладка ${r.project}`, `deploying ${r.project}`) : r.kind === "delete" ? tr(`удаление в ${quote(r.project)}`, `deleting in ${quote(r.project)}`) : tr(`обновление ${quote(r.project)}`, `updating ${quote(r.project)}`);
+const always = (r: NonNullable<Brief["rule"]>) =>
+  r.kind === "deploy" ? tr(`Выкладывать ${r.project} без вопросов`, `Deploy ${r.project} without asking`) : r.kind === "delete" ? tr(`Удалять в ${quote(r.project)} без вопросов`, `Delete in ${quote(r.project)} without asking`) : tr(`Обновлять ${quote(r.project)} без вопросов`, `Update ${quote(r.project)} without asking`);
+
+function confirmButtons(id: string, b?: Brief, own?: string): Button[][] {
+  const lean = b?.lean;
+  const verb = (b && yesVerb(b.head)) || own;
+  const rows: Button[][] = [
+    [
+      { text: verb ?? tr("Разрешить", "Allow"), data: `a:${id}:y`, ...(lean === "allow" ? { style: "success" as const } : {}) },
+      { text: tr("Отклонить", "Decline"), data: `a:${id}:n`, ...(lean === "reject" ? { style: "danger" as const } : {}) },
+    ],
+  ];
+  if (b?.more) rows.push([{ text: b.more.label, data: `a:${id}:m`, ...(lean === "look" ? { style: "primary" as const } : {}) }]);
+  if (b?.rule) rows.push([{ text: always(b.rule), data: `a:${id}:A` }]);
+  return rows;
+}
+
+// заголовок раскрывашки — по смыслу: у выкладки внутри то, что изменится
+const more = (parts: string[], title = tr("Подробнее", "Details")) => (parts.length ? `\n\n<details><summary>${title}</summary>\n\n${parts.join("\n\n")}\n\n</details>` : "");
+
+// Первая строка — что изменится (одна строка жирным на всё сообщение), ниже — где, что и можно ли вернуть, отдельным абзацем — совет.
+// Первая строка — вопросом, у остальных — точка: на экране блокировки iOS склеивает строки, и без знаков выходило
+// «Выложить Маяк 3 ссылки «Блога» ведут… Обновится beacon.example.com Прежнюю версию…».
+const ask = (x: string) => (!x || /[.?!…:]$/.test(x) ? x : `${x}?`);
+const dot = (x: string) => (!x || /[.?!…:]$/.test(x) ? x : `${x}.`);
+export function briefMd(b: Brief) {
+  // совет тем же глаголом, что на кнопке: «Советую выложить» под [Выложить], а не «разрешить» без такой кнопки
+  const verb = yesVerb(b.head);
+  const advice = b.advice && verb ? b.advice.replace(tr(/^Советую разрешить/, /^I’d allow it/), tr(`Советую ${verb.toLowerCase()}`, `I’d ${verb.toLowerCase()} it`)) : b.advice;
+  // вопросом — только просьба глаголом («Выложить Маяк?»); «Запускаю тесты» — описание сессии, ему — точка
+  return `${[`**${verb ? ask(b.head) : dot(b.head)}**`, ...b.lines.map(dot)].join("\n")}${advice ? `\n\n${dot(advice)}` : ""}${more(b.details ?? [], b.deploy ? tr("Что изменится", "What changes") : tr("Подробнее", "Details"))}`;
+}
+
+// Действие, уже написанное словами (свои инструменты архитектора, `archi ask`, доверие к папке): первая строка — что, ниже — почему спрашиваю.
+// Длинное продолжение (задача сессии, условие цели) — под «Подробнее», короткое — на виду.
+function wordsMd(source: string, action: string, reason?: string) {
+  const [first, ...rest] = scrub(action).trim().split("\n");
+  const tail = mdEsc(clip(rest.join("\n").trim(), 1500));
+  const why = reason ? mdEsc(clip(scrub(reason).replace(/^./, (c) => c.toUpperCase()), 600)) : "";
+  const who = source === "Архитектор" ? "" : tr(`Просит ${sessionName(source)}`, `Requested by ${sessionName(source)}`);
+  const head = mdEsc(clip(first, 300));
+  return [`**${yesVerb(head) ? ask(head) : dot(head)}**`, tail.length <= 300 ? tail : "", why && dot(why), who && dot(who)].filter(Boolean).join("\n\n") + (tail.length > 300 ? more([tail]) : "");
+}
+
+export class Approvals {
+  private pending = new Map<string, Pending>();
+
+  constructor(private tg: Telegram) {
+    tg.onCallback("a", async ({ id, value, answer }) => {
+      const p = this.pending.get(id);
+      if (!p || p.kind !== "confirm") return answer(tr("Уже решено или устарело", "Already decided or expired"));
+      const v = value === "y" || (value === "A" && p.rule) ? "yes" : value === "m" && p.more ? "more" : "no";
+      if (value === "A" && p.rule) rules.add(p.rule);
+      this.finishConfirm(id, v, undefined, value === "A" && !!p.rule);
+      await answer(v === "yes" ? tr("Разрешено", "Allowed") : v === "more" ? p.more!.next : tr("Отклонено", "Declined"));
+    });
+    tg.onCallback("q", async ({ id, value, answer }) => {
+      const p = this.pending.get(id);
+      if (!p || p.kind !== "question") return answer(tr("Уже отвечено или устарело", "Already answered or expired"));
+      const opts = p.q.options ?? [];
+      if (value === "done") {
+        const labels = [...p.picked].map((k) => opts[k]?.label).filter(Boolean);
+        if (!labels.length) return answer(tr("Выберите хотя бы один вариант", "Pick at least one option"));
+        this.finishQuestion(id, labels.join(", "), undefined, true);
+        return answer(tr("Отправлено", "Sent"));
+      }
+      const k = Number(value);
+      if (!(k in opts)) return answer(tr("Нет такого варианта", "No such option"));
+      if (p.q.multiSelect) {
+        p.picked.has(k) ? p.picked.delete(k) : p.picked.add(k);
+        await this.tg.edit(p.messageId, p.md, { buttons: this.questionButtons(id, p.q, p.picked) });
+        return answer();
+      }
+      this.finishQuestion(id, opts[k].label, undefined, true);
+      await answer(tr("Отправлено", "Sent"));
+    });
+  }
+
+  // Текст владельца как ответ: свой вариант на вопрос или запасное «да abc123» / «нет abc123».
+  takeText(m: Incoming): boolean {
+    if (m.forwardedFrom) return false; // пересланное — чужие слова, решением не считается
+    const t = m.text.trim();
+    const fallback = t.match(/^(да|нет|yes|no)\s+([a-z0-9]{6,10})$/i);
+    // из очереди облака «да код» не разрешает: решения — только кнопкой из своего опроса Telegram
+    if (fallback && !m.relayed) {
+      const p = this.pending.get(fallback[2]);
+      if (p?.kind === "confirm") {
+        this.finishConfirm(fallback[2], /^(да|yes)$/i.test(fallback[1]) ? "yes" : "no");
+        return true;
+      }
+    }
+    // свой вариант — только ответом (свайп) на сам вопрос: постороннее сообщение рядом с вопросом ответом не считается
+    if (!t || !m.replyToId) return false;
+    for (const [id, p] of this.pending)
+      if (p.kind === "question" && m.replyToId === p.messageId) {
+        this.finishQuestion(id, t);
+        return true;
+      }
+    return false;
+  }
+
+  get openCount() {
+    return this.pending.size;
+  }
+
+  // Что сейчас ждёт решения владельца — для «Пульта».
+  // final — необратимое («Вернуть нельзя» в брифе): решать только из самого брифа, не одним касанием из «Пульта»
+  list(): { kind: "confirm" | "question"; source: string; summary: string; since: number; messageId: number; final: boolean }[] {
+    const final = tr(/Вернуть (нельзя|можно не всё)/, /Can’t be undone|Only partly reversible/);
+    return [...this.pending.values()].map((p) => ({ kind: p.kind, source: p.source, summary: p.summary, since: p.since, messageId: p.messageId, final: p.kind === "confirm" && final.test(p.md) }));
+  }
+
+  // tool/input/cwd — запрос инструмента сессии: из них собирается бриф. Без них action — уже слова (свои инструменты архитектора, archi ask).
+  // shots — снимки кандидата от самой сессии: к выкладке они идут над брифом; worker — своя рабочая сессия (её можно попросить их снять).
+  async confirm(o: {
+    source: string;
+    action: string;
+    reason?: string;
+    tool?: string;
+    input?: Record<string, unknown>;
+    cwd?: string;
+    shots?: string[];
+    worker?: boolean;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    threadId?: number;
+    abortNote?: string;
+  }): Promise<Decision> {
+    const id = randomId();
+    const brief = o.tool
+      ? await decisionBrief({ tool: o.tool, input: o.input ?? {}, cwd: o.cwd ?? ARCH_HOME, source: o.source, shots: o.shots?.length, worker: o.worker, inTopic: !!o.threadId }).catch((e) => void log("approvals", "бриф не собрался — шлю словами", String(e)))
+      : undefined;
+    if (o.signal?.aborted) return "timeout"; // пока собирали бриф, вопрос снят — не тревожим
+    // проверено, что ничего не изменится (push в ветку, где всё уже есть), — владельца не тревожим; push в main сюда не попадает
+    if (brief?.noop) {
+      audit({ id, type: "auto", source: o.source, action: o.action, brief: brief.head, decision: "yes" });
+      return "yes";
+    }
+    // снимки кандидата — над брифом: решение принимают, глядя на них, а кнопки остаются под рукой внизу
+    if (brief?.deploy && o.shots?.length)
+      await this.tg.sendAlbum(o.shots.map((path, i) => ({ path, caption: i ? undefined : tr("Так станет после выкладки — снимки сессии", "How it will look after the deploy — the session’s screenshots") })), { threadId: o.threadId });
+    const md = brief ? briefMd(brief) : wordsMd(o.source, o.action, o.reason);
+    // «жду выкладку» — только там, где конвейер потом и правда ждёт наблюдатель (watcher.onApproved)
+    const deploy = !!brief?.deploy && /git\b.*\bpush\b|gh\s+(pr\s+merge|workflow\s+run|run\s+rerun)/.test(o.action);
+    // правило владельца «без вопросов» на этот вид действий в этом проекте — карточка сразу решённой и без звука
+    const standing = brief?.rule && rules.match(brief.rule);
+    if (standing) {
+      const label = tr(`Разрешено вашим правилом от ${day(standing.at)}`, `Allowed by your rule from ${day(standing.at)}`);
+      const [card] = await this.tg.send(md, { threadId: o.threadId, silent: true, buttons: done(deploy ? `${label} — ${tr("жду выкладку", "waiting for the deploy")}` : label) });
+      if (deploy) this.deployCards.set(o.action, { messageId: card, md, label });
+      audit({ id, type: "auto", source: o.source, action: o.action, brief: brief!.head, decision: "yes", rule: `${standing.kind}:${standing.project}` });
+      return "yes";
+    }
+    const [messageId] = await this.tg.send(md, { threadId: o.threadId, buttons: confirmButtons(id, brief, brief ? undefined : yesVerb(o.action.trim().split("\n")[0])) });
+    return new Promise((resolve) => {
+      const summary = brief ? clip(plain(brief.head), 120) : clip(o.action.replace(/\s+/g, " "), 120);
+      this.pending.set(id, { kind: "confirm", resolve, messageId, md, more: brief?.more, deploy, rule: brief?.rule, action: o.action, source: o.source, summary, since: Date.now() });
+      this.keepOpen(messageId, md);
+      const timer = setTimeout(() => this.finishConfirm(id, "timeout"), o.timeoutMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.finishConfirm(id, "timeout", typeof o.signal?.reason === "string" ? o.signal.reason : (o.abortNote ?? tr("Сессия сняла запрос", "The session withdrew the request")));
+      };
+      o.signal?.addEventListener("abort", onAbort);
+      if (o.signal?.aborted) onAbort();
+      audit({ id, type: "asked", source: o.source, action: o.action, reason: o.reason, brief: brief?.head });
+    });
+  }
+
+  // Карточки, открытые до перезапуска хоста, — уже ничьи: их ответ ждал прежний процесс. Иначе после перезапуска
+  // карточка остаётся с живыми на вид кнопками. Гасим их честной подписью.
+  private openCards = (): Record<string, string> => readJson<Record<string, string>>(join(STATE, "open-cards.json"), {});
+  private keepOpen(messageId: number, md?: string) {
+    const all = this.openCards();
+    if (md === undefined) delete all[messageId];
+    else all[messageId] = md;
+    writeJson(join(STATE, "open-cards.json"), all);
+  }
+  // зовёт хост один раз при запуске (src/main.ts)
+  async expireOld() {
+    const old = Object.entries(this.openCards());
+    if (!old.length) return;
+    writeJson(join(STATE, "open-cards.json"), {});
+    for (const [id, md] of old) await this.tg.edit(Number(id), md, { buttons: done(tr("Бот перезапускался — этот запрос больше не действует", "The bot restarted — this request no longer applies")) }).catch(() => {});
+  }
+
+  // Выкладка кончилась — подпись карты говорит чем: «Разрешено в 11:43 — выложено в 11:51», а не «жду выкладку»
+  // до вечера. tail пустой — наблюдатель за ней не следит, ждать нечего.
+  private deployCards = new Map<string, { messageId: number; md: string; label: string }>();
+  settleDeploy(action: string, tail: string) {
+    const c = this.deployCards.get(action);
+    if (!c) return;
+    this.deployCards.delete(action);
+    this.tg.edit(c.messageId, c.md, { buttons: done(tail ? `${c.label} — ${tail}` : c.label) });
+  }
+
+  private finishConfirm(id: string, v: "yes" | "no" | "timeout" | "more", note?: string, forever = false) {
+    const p = this.pending.get(id);
+    if (!p || p.kind !== "confirm") return;
+    this.pending.delete(id);
+    this.keepOpen(p.messageId);
+    // к выкладке подпись говорит, что дальше: конвейер дождётся наблюдатель и пришлёт итог со снимком сайта
+    const at = tr(`в ${hhmm()}`, `at ${hhmm()}`);
+    const said = v === "yes" ? tr("Разрешено", "Allowed") : v === "no" ? tr("Отклонено", "Declined") : tr("Время вышло", "Timed out");
+    const base = `${said} ${at}${forever ? tr(" и дальше без вопросов", ", and from now on without asking") : ""}`;
+    const label = note ?? (v === "more" ? `${p.more!.note} ${at}` : `${base}${v === "yes" && p.deploy ? tr(" — жду выкладку", " — waiting for the deploy") : ""}`);
+    this.tg.edit(p.messageId, p.md, { buttons: done(label) });
+    if (v === "yes" && p.deploy && !note) this.deployCards.set(p.action, { messageId: p.messageId, md: p.md, label: base });
+    audit({ id, type: "decided", decision: v });
+    p.resolve(v === "more" ? { tell: p.more!.tell } : v);
+  }
+
+  // Задаёт вопросы по одному; возвращает {текст вопроса: ответ} или null, если ответа не было.
+  async ask(o: { source: string; questions: Question[]; timeoutMs: number; signal?: AbortSignal; threadId?: number; abortNote?: string }): Promise<Record<string, string> | null> {
+    const answers: Record<string, string> = {};
+    for (const q of o.questions) {
+      const a = await this.askOne(o.source, q, o.timeoutMs, o.signal, o.threadId, o.abortNote);
+      if (a === null) return null;
+      answers[q.question] = a;
+    }
+    return answers;
+  }
+
+  // Вопрос — первой строкой, жирным; ниже совет сессии, кто спрашивает и что можно ответить своими словами.
+  // Варианты — только кнопками; их пояснения, если есть, — под «Подробнее».
+  private async askOne(source: string, q: Question, timeoutMs: number, signal?: AbortSignal, threadId?: number, abortNote?: string): Promise<string | null> {
+    const id = randomId();
+    const opts = q.options ?? [];
+    const rec = opts.find((o) => RECOMMENDED.test(o.label));
+    const label = (o: { label: string }) => mdEsc(o.label.replace(RECOMMENDED, ""));
+    // совет — с причиной из пояснения к советуемому варианту; пояснения остальных — под «Подробнее»
+    // пояснение после двоеточия и тире — со строчной: «советует «Да, удалить»: освободится около 34 ГБ»
+    const low = (x: string) => (tr(/^\p{Lu}\p{Ll}/u, /^[A-Z][a-z]+\b/).test(x) ? x.charAt(0).toLowerCase() + x.slice(1) : x);
+    const advice = rec && `${quote(label(rec))}${rec.description ? `: ${mdEsc(low(rec.description))}` : ""}`;
+    const about = opts.filter((o) => o.description && o !== rec).map((o) => `${label(o)} — ${mdEsc(low(o.description!))}`);
+    const who = sessionName(source);
+    const from =
+      source === "Архитектор"
+        ? advice
+          ? tr(`Советую ${advice}`, `I’d pick ${advice}`)
+          : ""
+        : advice
+          ? tr(`Сессия ${who} советует ${advice}`, `${who.charAt(0).toUpperCase()}${who.slice(1)} recommends ${advice}`)
+          : tr(`Спрашивает сессия ${who}`, `Asked by ${who}`);
+    const md = [
+      `**${mdEsc(scrub(q.question))}**`,
+      [dot(from.replace(/\s+/g, " ").trim()), q.multiSelect ? tr("Можно выбрать несколько, потом «Отправить».", "You can pick several, then tap “Send”.") : ""].filter(Boolean).join("\n"), // без «Свой вариант — ответьте на это сообщение»: свой ответ — свайпом по вопросу, это в руководстве
+      about.length ? `<details><summary>${tr("Подробнее", "Details")}</summary>\n\n${about.join("\n\n")}\n\n</details>` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const [messageId] = await this.tg.send(md, { threadId, buttons: this.questionButtons(id, q, new Set()) });
+    return new Promise((resolve) => {
+      // вопрос целиком: в сводке из него берётся последняя фраза с самим вопросом. Обрезанный до 120 знаков, он давал
+      // начало рассказа без самого вопроса
+      this.pending.set(id, { kind: "question", resolve, messageId, md, q, picked: new Set(), source, summary: q.question.replace(/\s+/g, " ").trim(), since: Date.now() });
+      this.keepOpen(messageId, md);
+      const timer = setTimeout(() => this.finishQuestion(id, null), timeoutMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.finishQuestion(id, null, typeof signal?.reason === "string" ? signal.reason : abortNote);
+      };
+      signal?.addEventListener("abort", onAbort);
+      if (signal?.aborted) onAbort();
+    });
+  }
+
+  // Совет сессии и выбранные варианты — синие; без значков.
+  private questionButtons(id: string, q: Question, picked: Set<number>): Button[][] {
+    const rows: Button[][] = (q.options ?? []).map((o, k) => [
+      { text: clip(o.label.replace(RECOMMENDED, ""), 60), data: `q:${id}:${k}`, ...(picked.has(k) || (!q.multiSelect && RECOMMENDED.test(o.label)) ? { style: "primary" as const } : {}) },
+    ]);
+    if (q.multiSelect) rows.push([{ text: picked.size ? `${tr("Отправить", "Send")} (${picked.size})` : tr("Отправить", "Send"), data: `q:${id}:done`, style: "success" as const }]);
+    return rows;
+  }
+
+  private finishQuestion(id: string, answer: string | null, note?: string, picked = false) {
+    const p = this.pending.get(id);
+    if (!p || p.kind !== "question") return;
+    this.pending.delete(id);
+    this.keepOpen(p.messageId);
+    const label =
+      answer === null
+        ? (note ?? tr("Без ответа", "No answer"))
+        : picked
+          ? tr(`Выбрано «${clip(answer.replace(RECOMMENDED, ""), 28)}» в ${hhmm()}`, `Picked “${clip(answer.replace(RECOMMENDED, ""), 28)}” at ${hhmm()}`)
+          : tr(`Ответ получен в ${hhmm()}`, `Answer received at ${hhmm()}`);
+    this.tg.edit(p.messageId, p.md, { buttons: done(label) });
+    audit({ id, type: "answered", answer });
+    p.resolve(answer);
+  }
+}
+
+function audit(rec: Record<string, unknown>) {
+  try {
+    appendFileSync(join(LOGS, "decisions.jsonl"), scrub(JSON.stringify({ at: new Date().toISOString(), ...rec })) + "\n");
+  } catch (e) {
+    log("approvals", "не записал журнал решений", String(e));
+  }
+}

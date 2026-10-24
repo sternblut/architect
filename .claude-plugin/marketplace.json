@@ -1,0 +1,16 @@
+{
+  "name": "sapfir",
+  "description": "Plugins by sternblut: the Telegram architect for Claude Code.",
+  "owner": {
+    "name": "sternblut",
+    "url": "https://github.com/sternblut"
+  },
+  "plugins": [
+    {
+      "name": "architect",
+      "source": "./",
+      "description": "Run Claude Code on this Mac from Telegram, with a gate before anything irreversible.",
+      "category": "productivity"
+    }
+  ]
+}

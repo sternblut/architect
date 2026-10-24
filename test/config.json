@@ -1,0 +1,74 @@
+{
+  "label": "app.archi.host",
+  "keychainService": "archi-telegram",
+  "keychainAccount": "archi",
+  "hookPort": 47300,
+  "roots": [
+    "~/Desktop",
+    "~/Downloads",
+    "~"
+  ],
+  "architect": {
+    "model": "opus",
+    "effort": "max"
+  },
+  "workers": {
+    "model": "opus",
+    "effort": "max"
+  },
+  "githubOwner": "acme",
+  "sites": [
+    {
+      "name": "Главная",
+      "url": "https://example.com/",
+      "repo": "home",
+      "keychain": "home-view"
+    },
+    {
+      "name": "Онлайн-курс",
+      "url": "https://example.com/course/",
+      "repo": "course"
+    },
+    {
+      "name": "Маяк",
+      "url": "https://beacon.example.com/",
+      "repo": "beacon",
+      "keychain": "beacon-site"
+    },
+    {
+      "name": "A*",
+      "url": "https://astar.example.com/",
+      "repo": "astar",
+      "keychain": "astar-site",
+      "aliases": [
+        "астар",
+        "эйстар",
+        "a*"
+      ]
+    },
+    {
+      "name": "Регламенты",
+      "url": "https://handbook.example.com/",
+      "repo": "handbook",
+      "keychain": "handbook-site"
+    },
+    {
+      "name": "Арена",
+      "url": "https://solutions.example.com/",
+      "repo": "arena",
+      "keychain": "solutions-site"
+    }
+  ],
+  "repos": [
+    "home",
+    "course",
+    "beacon",
+    "astar",
+    "handbook",
+    "arena",
+    "landing-lab",
+    "architect"
+  ],
+  "hostingPattern": "example|hosting\\.example",
+  "richMessages": true
+}

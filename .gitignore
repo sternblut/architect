@@ -1,0 +1,11 @@
+.env
+*.env
+state/
+logs/
+node_modules
+.DS_Store
+.claude/worktrees/
+.wrangler/
+config.local.json
+notes/
+CLAUDE.local.md

@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The situation on your phone or at your Mac, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do now instead

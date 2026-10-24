@@ -1,0 +1,14 @@
+{
+  "description": "Questions, permission requests and end-of-turn questions of every Claude Code session reach Telegram while you are away from the Mac (src/anyhook.ts). Before /architect:connect they do nothing.",
+  "hooks": {
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "ARCH_DATA=\"${CLAUDE_PLUGIN_DATA}\" bun \"${CLAUDE_PLUGIN_ROOT}/src/anyhook.ts\"", "timeout": 21600 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "ARCH_DATA=\"${CLAUDE_PLUGIN_DATA}\" bun \"${CLAUDE_PLUGIN_ROOT}/src/anyhook.ts\"", "timeout": 21600 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "ARCH_DATA=\"${CLAUDE_PLUGIN_DATA}\" bun \"${CLAUDE_PLUGIN_ROOT}/src/anyhook.ts\"", "timeout": 7200 }] }
+    ]
+  }
+}

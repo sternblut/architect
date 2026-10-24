@@ -1,0 +1,32 @@
+name: Bug report
+description: Something does not work as described
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got. A screenshot from Telegram helps.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: status
+    attributes:
+      label: archi status
+      description: Output of `archi status`. Remove anything private.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: macOS, `bun --version`, `claude --version`, first line of `archi version`
+    validations:
+      required: true

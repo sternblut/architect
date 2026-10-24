@@ -1,0 +1,10 @@
+{
+  "label": "app.archi.host",
+  "lang": "en",
+  "keychainService": "archi-telegram",
+  "keychainAccount": "archi",
+  "hookPort": 47300,
+  "architect": { "model": "opus", "effort": "max" },
+  "workers": { "model": "opus", "effort": "max" },
+  "setupDone": false
+}

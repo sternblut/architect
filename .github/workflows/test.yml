@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, build]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # каждый файл — своим процессом: тесты задают свою папку состояния до импорта модулей,
+      # а в одном процессе модули общие и состояние одного файла видно другому
+      - run: for f in test/*.test.ts; do bun test "$f" || exit 1; done

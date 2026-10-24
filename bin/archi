@@ -1,0 +1,3 @@
+#!/bin/bash
+# archi — та же команда, что bin/arch: из плагина Claude Code «arch» заслоняет системная /usr/bin/arch
+exec "$(dirname "$0")/arch" "$@"

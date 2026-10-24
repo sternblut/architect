@@ -1,0 +1,31 @@
+# Дежурный архитектора (отвечает в Telegram, пока Mac спит) и ящик подключения новых Mac. Секретов нет (src/index.ts).
+name = "archi-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-30"
+workers_dev = true
+send_metrics = false
+
+# журналы запросов выключены: в адресе webhook — путь, который должны знать только Telegram и Mac
+[observability]
+enabled = false
+
+[vars]
+# открытый ключ Mac (не секрет): bun src/relay-key.ts на Mac печатает его
+MAC_KEY = ""
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+# ящик подключения нового Mac: конверт менеджера на 15 минут, только шифр (DESIGN-V.md §4)
+[[durable_objects.bindings]]
+name = "BOX"
+class_name = "Box"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Box"]
