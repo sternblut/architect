@@ -1,11 +1,11 @@
-// Помощник хоста архитектора: говорит, когда Mac засыпает и просыпается (IORegisterForSystemPower).
-// stdout: «sleep N» — Mac засыпает; сон ждёт из stdin строку «ok N» (хост передал бота дежурному), но не дольше 20 с.
-//         «wake»    — Mac проснулся (полное ли пробуждение, хост проверяет сам).
-// stdin закрылся — хоста нет, выходим. Сборка: swiftc -O powerwatch.swift -o powerwatch (src/relay.ts делает сам).
+// Host helper that reports when the Mac goes to sleep and wakes (IORegisterForSystemPower).
+// stdout: "sleep N"  the Mac is going to sleep; sleep waits up to 20 s for "ok N" on stdin (the relay has the bot)
+//         "wake"     the Mac woke up (the host checks whether it is a full wake)
+// Exits when stdin closes, i.e. the host is gone. Build: swiftc -O powerwatch.swift -o powerwatch (src/relay.ts does it).
 import Foundation
 import IOKit.pwr_mgt
 
-// iokit_common_msg(…) из IOKit/IOMessage.h: в Swift эти макросы не видны
+// iokit_common_msg(…) values from IOKit/IOMessage.h, whose macros Swift can't see
 let canSystemSleep: UInt32 = 0xE000_0270
 let systemWillSleep: UInt32 = 0xE000_0280
 let systemHasPoweredOn: UInt32 = 0xE000_0300
@@ -52,7 +52,7 @@ root = IORegisterForSystemPower(nil, &port, { _, _, type, arg in
   }
 }, &notifier)
 guard root != 0, let port else {
-  FileHandle.standardError.write(Data("IORegisterForSystemPower не сработал\n".utf8))
+  FileHandle.standardError.write(Data("IORegisterForSystemPower failed\n".utf8))
   exit(1)
 }
 CFRunLoopAddSource(CFRunLoopGetCurrent(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .defaultMode)

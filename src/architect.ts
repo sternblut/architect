@@ -1,5 +1,5 @@
-// Архитектор: постоянная сессия Claude Code (Agent SDK), с которой владелец говорит в Telegram.
-// Ход виден вживую: черновик с блоком «Думаю…» (что сейчас делает) и текстом ответа по мере написания; кнопка «Стоп» прерывает ход.
+// The architect: a long-lived Claude Code session (Agent SDK) the owner talks to in Telegram. Each turn is visible live
+// as a draft with a "Thinking…" line (what it is doing) and the reply as it is written; a Stop button interrupts it.
 import { query, type CanUseTool, type HookCallback, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -15,14 +15,14 @@ import { limitReset, untilTime } from "./status";
 import { clip, hhmm, log, readJson, sleep, writeJson } from "./util";
 
 const STATE_FILE = join(STATE, "architect.json");
-const PENDING_FILE = join(STATE, "pending.json"); // сообщение владельца, на которое ещё нет ответа: переживает перезапуск хоста
-const BUSY_FILE = join(STATE, "busy"); // архитектор посреди хода — archi restart подождёт
+const PENDING_FILE = join(STATE, "pending.json"); // the owner's message still without a reply; survives a host restart
+const BUSY_FILE = join(STATE, "busy"); // the architect is mid-turn, so archi restart waits
 const NOTES = join(WORK, "notes");
 const MEMORY = join(projectDir(WORK), "memory");
 
 type Content = Exclude<SDKUserMessage["message"]["content"], string>;
 
-const DENIED = () => tr("Продолжаю без этого", "Continuing without it"); // черновик сразу после «Отклонить»
+const DENIED = () => tr("Продолжаю без этого", "Continuing without it"); // the draft right after "Decline"
 const THINKING = () => tr("Думаю", "Thinking");
 
 class Inbox {
@@ -32,7 +32,7 @@ class Inbox {
     this.buf.push(m);
     this.wake?.();
   }
-  // Новый поток на каждый запуск сессии; непрочитанное переживает перезапуск.
+  // A new stream for every session start; unread messages survive a restart
   stream(stop: { stopped: boolean }): AsyncIterable<SDKUserMessage> {
     const self = this;
     return {
@@ -119,10 +119,9 @@ const VERBS_EN: Record<string, string> = {
   AskUserQuestion: "Asking you",
 };
 
-// Остановить сессию, поставить или снять цель — по его слову: если он сам только что попросил, второй вопрос кнопкой
-// лишний: архитектор действует по его слову, как распорядитель. Слово проверяет код, а не модель:
-// цель — его текст дословно (пересказ мог исказить смысл — тогда кнопка с текстом), стоп и снятие цели — глагол
-// и имя этой сессии в одном его сообщении, без «не».
+// Stopping a session or setting/clearing a goal on the owner's word needs no second question. The code, not the model,
+// checks the word: a goal must be the owner's text verbatim (a paraphrase gets a button with the text); stop and clear
+// need a verb and the session's name in one message, without a negation.
 const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[«»"“”„'`.,;:!?()]+/g, " ").replace(/\s[—–-]\s/g, " ").replace(/\s+/g, " ").trim();
 const OWNER_WORD = ["mcp__arch__stop_session", "mcp__arch__set_goal", "mcp__arch__clear_goal", "mcp__arch__start_session"];
 export function saidByOwner(tool: string, input: Record<string, unknown>, said: string[], name?: string): boolean {
@@ -133,7 +132,7 @@ export function saidByOwner(tool: string, input: Record<string, unknown>, said: 
   const clear = /(сним|убер|убра|очист|отмен|сброс|хватит|не нужн|не надо)/i;
   return said.some((m) => {
     if (/(^|[\s,.])не\s+\S*(останав|прекращ|сним|убир|трога|отменя)/i.test(m)) return false;
-    // по-английски — только английским словом владельца (русские проверки выше остаются и для него)
+    // in English only the owner's English words count (the Russian checks above still apply)
     if (tr(false, NOT_EN.test(m))) return false;
     if (tr(false, saidEn(tool, m, name))) return true;
     if (!verb.test(m) || (tool === "mcp__arch__clear_goal" && !clear.test(m))) return false;
@@ -141,16 +140,16 @@ export function saidByOwner(tool: string, input: Record<string, unknown>, said: 
   });
 }
 
-// Его слова дословно: каждый кусок (пропуски — «…») целыми словами есть в одном из его сообщений. Пересказ архитектора
-// может исказить смысл, поэтому своё архитектор передаёт только с пометкой.
+// The owner's words verbatim: each piece (gaps marked "…") appears as whole words in one of their messages. A paraphrase
+// could change the meaning, so the architect passes its own words only as a marked note.
 export function quotesOwner(words: string, said: string[]): boolean {
   const parts = words.split(/…|\.{3}/).map(norm).filter(Boolean);
   return parts.length > 0 && parts.every((p) => said.some((m) => ` ${norm(m)} `.includes(` ${p} `)));
 }
 
-// По-английски согласие — повеление: глагол в начале фразы («Stop Beacon», «please stop the Beacon session»), а не вопрос
-// «why did Beacon stop?»; имя сессии — сразу за глаголом, до запятой: «Stop Beacon, not Arena» Арену не останавливает.
-// Снять цель — remove/clear/drop/cancel и рядом слово goal. Отрицание (don't, do not, not, never) — не согласие.
+// In English, consent is an imperative: the verb starts a phrase ("Stop Beacon", "please stop the Beacon session"),
+// unlike "why did Beacon stop?", and the name follows it before any comma, so "Stop Beacon, not Arena" leaves Arena.
+// Clearing a goal takes remove/clear/drop/cancel with "goal" nearby. A negation (don't, do not, not, never) isn't consent.
 const NOT_EN = /\b(?:don['’]?t|do not|never|not)\s+(?:\w+\s+)?(?:stop|halt|pause|remove|clear|drop|cancel)\b/i;
 function saidEn(tool: string, m: string, name: string): boolean {
   const stop = tool === "mcp__arch__stop_session";
@@ -164,10 +163,10 @@ function saidEn(tool: string, m: string, name: string): boolean {
   return false;
 }
 
-// ошибки входа в Claude: после смены аккаунта старый процесс их получает, новый — нет
-// Обещание в ответе владельцу: без записи follow_up оно теряется
+// A promise in a reply to the owner, which is lost without a follow_up record
 export const PROMISE = () => tr(/(?<!\p{L})(пришлю|напомню|сообщу|дам знать|отпишусь)(?!\p{L})/iu, /\b(I['’]ll|I will) (send|remind|let you know|get back)\b/i);
 
+// Claude sign-in errors: after an account switch the old process gets them and a new one doesn't
 const AUTH = /Identity verification is required|authentication_error|invalid (x-api-key|bearer|oauth)|OAuth token|401 Unauthorized|please run \/login|not logged in/i;
 
 export function architectVerdict(tool: string, input: Record<string, unknown>): Verdict {
@@ -177,39 +176,36 @@ export function architectVerdict(tool: string, input: Record<string, unknown>): 
     if (p.startsWith(ARCH_HOME + "/") || (DATA && p.startsWith(DATA + "/"))) return { decision: "deny", reason: "свои правила, код и настройки архитектор не меняет — это делает владелец" };
     return { decision: "ask", reason: tr("правка файла вне папки архитектора — обычно это работа для отдельной сессии", "editing a file outside the architect’s folder is usually a job for a separate session") };
   }
-  // процессы сессий владельца архитектор не завершает: kill -TERM сессии во вкладке без обёртки оставит
-  // вкладку пустой строкой Терминала. Остановка — stop_session, перезапуск — restart_session
-  // по имени программы в каждой команде строки: «/bin/kill -9 …» обходило бы проверку по тексту
+  // The architect never kills session processes: a session in a tab without the wrapper would leave a bare prompt.
+  // Stopping is stop_session, restarting restart_session. Checked by program name in every command of the line, since
+  // "/bin/kill -9 …" would slip past a text check.
   const killer = (c: string[]) => /^(kill|pkill|killall|gkill)$/.test(basename(stripPrefixes(c.filter((x) => !x.startsWith("\u0000")))[0] ?? ""));
   if (tool === "Bash" && (parseShell(String(input.command ?? "")).commands.some(killer) || /\bclaude\s+(stop|kill|respawn|rm)\b/.test(String(input.command ?? "")))) return { decision: "deny", reason: "процессы сессий не завершаю сам: остановка — stop_session, перезапуск — restart_session" };
-  // причины — словами владельца: их видно под первой строкой запроса
+  // the reasons are in the owner's words: they show under the request's first line
   if (tool === "mcp__arch__stop_session") return { decision: "ask", reason: tr("работа прервётся, разговор сохранится — продолжить можно позже", "work will stop; the conversation is kept, so it can resume later") };
   if (tool === "mcp__arch__set_goal" || tool === "mcp__arch__clear_goal") return { decision: "ask", reason: tr("цель сессии меняется только с вашего разрешения", "a session’s goal changes only with your permission") };
   if (tool === "mcp__arch__start_session" && input.goal) return { decision: "ask", reason: tr("сессия с целью работает без остановок, пока цель не выполнена", "a session with a goal keeps working until the goal is met") };
   return classifyTool(tool, input, { cwd: ARCH_HOME, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, ask: config.ask });
 }
 
-// «You've hit your weekly limit · resets Oct 20 at 11pm (Europe/Moscow)» → по-русски, «до завтра, 23:00»
-// Зачин о себе — «Понял.», «Передал «X» ваши слова дословно.», «Вы правы» — правила письма запрещают, но модель
-// повторяет его по примерам из своего же разговора. Хост убирает первую такую фразу; если кроме неё ничего нет —
-// остаётся «Передал.».
+// Openers about itself ("Got it.", "Passed your words to X verbatim.", "You're right") break the writing rules, yet the
+// model copies them from its own conversation. The host drops the first such phrase; if nothing else is left,
+// "Passed on." remains.
 export function noOpener(text: string): string {
-  // «Передал Лендингу: агент на оформление и мелкие коммиты» — что именно передано и что дальше, это не зачин:
-  // голое «Передал.» после длинного голосового — слишком скупо
+  // "Passed on to Landing: …" says what was passed and what comes next, so it is not an opener
   const passed = tr(/^\s*\**\s*Передал/i, /^\s*\**\s*Passed (?:it )?on\b/i);
   if (tr(/^\s*\**\s*Передал[^\n.!?]*:\s*\S/i, /^\s*\**\s*Passed (?:it )?on\b[^\n.!?]*:\s*\S/i).test(text)) return text;
   const m = text.match(tr(/^\s*\**\s*(Понял|Понимаю|Принял|Вы правы|Передал|Написал|Попросил)[^\n.!?]*[.!?]?\s*\**\s*/i, /^\s*\**\s*(Got it|Understood|I understand|Noted|You['’]re right|Passed (?:it )?on|I passed|Wrote|I wrote|Asked|I asked)\b[^\n.!?]*[.!?]?\s*\**\s*/i));
   if (!m) return text;
   let rest = text.slice(m[0].length).trim();
   if (!rest) return passed.test(text) ? PASSED() : text;
-  if ((rest.match(/\*\*/g) ?? []).length % 2) rest = `**${rest}`; // жирная первая фраза потеряла открывающие звёздочки
+  if ((rest.match(/\*\*/g) ?? []).length % 2) rest = `**${rest}`; // the bold first phrase lost its opening asterisks
   return rest.replace(/^(\**)(\p{L})/u, (_, b, c) => b + c.toUpperCase());
 }
 
+const PASSED = () => tr("Передал.", "Passed on."); // the receipt for passing on a short message
 
-const PASSED = () => tr("Передал.", "Passed on."); // квитанция: передал его короткую реплику — и всё
-
-// Ход кончился ошибкой: что успел сказать — и почему не довёл до конца, без сырых кодов (они — в журнал)
+// A turn that ended in an error: what was said and why it stopped, without raw codes (those go to the log)
 export function replyFailed(said: string, reason: "too_long" | "limit" | "error"): string {
   const why = {
     too_long: tr("разговор стал слишком длинным — напишите /new, и начнём заново", "the conversation got too long — send /new and we’ll start over"),
@@ -219,6 +215,7 @@ export function replyFailed(said: string, reason: "too_long" | "limit" | "error"
   return said ? tr(`${said}\n\nНе довёл до конца: ${why}.`, `${said}\n\nCouldn’t finish: ${why}.`) : tr(`Не смог ответить: ${why}.`, `Couldn’t reply: ${why}.`);
 }
 
+// "You've hit your weekly limit · resets Oct 20 at 11pm (Europe/Moscow)" → "until tomorrow, 23:00" in the owner's language
 export function limitRu(text: string): string {
   const reset = limitReset(text);
   if (reset === undefined) return text;
@@ -229,7 +226,7 @@ export function limitRu(text: string): string {
   );
 }
 
-// «→ Разобраться с A* | Показать сайт» последней строкой ответа — кнопки следующих шагов (до 3, коротко)
+// A last line like "→ Look into A* | Show the site" becomes next-step buttons (up to 3, short)
 export function splitSteps(answer: string): { text: string; steps: string[] } {
   const lines = answer.trimEnd().split("\n");
   const last = lines[lines.length - 1]?.trim() ?? "";
@@ -245,30 +242,30 @@ export class Architect {
   private stopFlag = { stopped: false };
   sessionId?: string = readJson<{ sessionId?: string }>(STATE_FILE, {}).sessionId;
   private promptHash = "";
-  private limitNoticeFor = 0; // о каком сбросе лимита уже сказали владельцу
+  private limitNoticeFor = 0; // the limit reset the owner was already told about
   busy = false;
-  private pressed = false; // в этом ходе владелец ответил кнопкой на вопрос архитектора
-  private followed = false; // в этом ходе записал обещание (follow_up)
+  private pressed = false; // the owner answered the architect's question with a button this turn
+  private followed = false; // a follow_up was recorded this turn
   private nudgedAt = 0;
-  private authRetryAt = 0; // когда последний раз поднимали новый процесс из-за входа в Claude
-  authBroken = false; // Claude не пускает и после нового процесса — хост отвечает сам, как при кончившемся лимите
-  // Процесс Claude Code упал и ещё не поднялся (не установлен, сломан, нет входа): с какого времени. Тогда хост
-  // отвечает сам, иначе на «что у нас» бот молчит, пока процесс падает.
+  private authRetryAt = 0; // the last new process started for a Claude sign-in error
+  authBroken = false; // sign-in still fails after a new process: the host answers by itself, as when the limit is out
+  // Since when the Claude Code process has been down (not installed, broken, signed out). Meanwhile the host answers
+  // by itself, or the bot would stay silent.
   crashedSince?: number;
-  relayFor?: { sessionId: string; label: string; at: number }; // чей вопрос он сейчас передаёт владельцу
-  private turnAt = 0; // когда начался ход — для счётчика «Думаю · 24 с»
-  // ход, который видит владелец
+  relayFor?: { sessionId: string; label: string; at: number }; // whose question it is passing to the owner now
+  private turnAt = 0; // for the "Thinking · 24 s" counter
+  // The turn as the owner sees it
   private draftId = 0;
   private thinking = THINKING();
-  private live = ""; // текст ответа, который пишется прямо сейчас
-  private turnTexts: string[] = []; // текст после последнего инструмента — это и есть ответ
-  private lastTexts: string[] = []; // текст перед последним инструментом — если после него ничего не написано, ответ он (ccteam#192)
+  private live = ""; // the reply text being written right now
+  private turnTexts: string[] = []; // text after the last tool call: the reply
+  private lastTexts: string[] = []; // text before the last tool call: the reply if nothing follows it
   private lastDraftAt = 0;
   private draftTimer?: Timer;
   private keepAlive?: Timer;
   private replyTo?: number;
-  private asking?: () => void; // ход ждёт ответа на вопрос или кнопку: новое сообщение владельца отпускает ход, вопрос остаётся
-  private granted = new Map<string, number>(); // разрешено кнопкой уже после того, как ход отпустили: один раз, без второй карточки
+  private asking?: () => void; // the turn waits on a question or a card; a new owner message releases it, the question stays
+  private granted = new Map<string, number>(); // allowed with a button after the turn moved on: once, with no second card
   private stoppedByOwner = false;
   private fastRestart = false;
   private steps = new Map<string, string[]>();
@@ -281,12 +278,12 @@ export class Architect {
   stepText(id: string, k: number): string | undefined {
     return this.steps.get(id)?.[k];
   }
-  // ответ кнопкой на вопрос архитектора — тоже его слово: решение уходит сессии дословно (message_session сверяет words)
+  // A button answer to the architect's question counts as the owner's words (message_session checks words against them)
   private heard(answers: Record<string, string>) {
     this.pressed = true;
     this.d.tg.ownerSaid = [...this.d.tg.ownerSaid, ...Object.values(answers).map((text) => ({ at: Date.now(), text }))].slice(-10);
   }
-  // Сразу и со звуком, в том числе ночью (инструмент wake_owner); строка «→ …» — кнопки, как у обычного ответа
+  // Right away and with sound, at night too (wake_owner); a "→ …" line becomes buttons as in a normal reply
   async wake(md: string) {
     const { text, steps } = splitSteps(md);
     const id = steps.length ? this.rememberSteps(steps) : "";
@@ -305,8 +302,8 @@ export class Architect {
   ) {}
 
   start() {
-    // SDK при продолжении сессии шлёт системную подсказку, записанную в её первом ходе: правила изменились — новая сессия
-    // правила архитектора — и подсказка хоста, и CLAUDE.md папки: при их правке разговор начинается заново, иначе новые правила не дошли бы
+    // The rules are the host's prompt and the folder's CLAUDE.md files. A change is only logged: the conversation goes
+    // on, since starting over would lose all its context.
     const rules = ["CLAUDE.md", "CLAUDE.local.md"].map((f) => {
       try {
         return readFileSync(join(WORK, f), "utf8");
@@ -316,10 +313,8 @@ export class Architect {
     });
     this.promptHash = Bun.hash([this.d.appendPrompt, ...rules].join("\n")).toString(36);
     const st = readJson<{ sessionId?: string; promptHash?: string }>(STATE_FILE, {});
-    // Разговор переживает обновление правил: новые уже в системной подсказке, а обнуление стирало контекст,
-    // и каждый вопрос после этого архитектор выяснял с нуля
     if (st.sessionId && st.promptHash !== this.promptHash) log("architect", "правила архитектора обновились — разговор продолжается");
-    // перезапуск посреди ответа: доводим последнее сообщение владельца
+    // restarted mid-reply: answer the owner's last message again
     const pending = readJson<{ text?: string; messageId?: number; at?: number } | null>(PENDING_FILE, null);
     if (pending?.text && Date.now() - (pending.at ?? 0) < 6 * 3600_000) {
       log("architect", "довожу сообщение владельца, прерванное перезапуском");
@@ -358,24 +353,24 @@ export class Architect {
   private makeQuery(stop: { stopped: boolean }): Query {
     const canUseTool: CanUseTool = async (tool, input, { signal, decisionReason }) => {
       if (tool === "AskUserQuestion") {
-        // Вопрос живёт до ответа кнопкой или свайпом по нему. Пока он открыт, ход ждёт; новое сообщение владельца ход отпускает,
-        // а вопрос с кнопками остаётся: ответит позже — ответ придёт архитектору отдельным сообщением
-        const ac = new AbortController(); // «Стоп» хода, пока он ждёт, снимает и вопрос
+        // A question lives until answered with a button or a swipe reply. While it is open the turn waits; a new owner
+        // message releases the turn but keeps the buttons, and a later answer reaches the architect as a new message.
+        const ac = new AbortController(); // stopping the turn while it waits withdraws the question too
         const onStop = () => ac.abort(signal.reason);
         signal.addEventListener("abort", onStop);
-        // вопрос, который он задаёт за сессию владельца, — от её имени (в закрепе одна строка, один ответ)
+        // a question asked on behalf of an owner's session goes under its name (one dashboard line, one answer)
         const on = this.relayFor && Date.now() - this.relayFor.at < 30 * 60_000 ? this.relayFor : undefined;
-        this.relayFor = undefined; // один вопрос сессии — один вопрос владельцу
+        this.relayFor = undefined; // one session question, one question to the owner
         const answered = this.d.approvals.ask({ source: on?.label ?? "Архитектор", questions: (input.questions ?? []) as Question[], timeoutMs: 6 * 3600_000, signal: ac.signal });
         const wrote = new Promise<"wrote">((res) => (this.asking = () => res("wrote")));
         try {
           const r = await Promise.race([answered, wrote]);
           if (r && r !== "wrote") this.heard(r);
           if (r !== "wrote") return r ? { behavior: "allow", updatedInput: { ...input, answers: r } } : { behavior: "deny", message: "Владелец не ответил на вопрос." };
-          signal.removeEventListener("abort", onStop); // вопрос больше не привязан к этому ходу
+          signal.removeEventListener("abort", onStop); // the question is no longer tied to this turn
           void answered.then((a) => {
             if (!a) return;
-            if (!this.busy) this.replyTo = 0; // ответ кнопкой — без сообщения, на которое отвечать; черновик хода всё равно виден
+            if (!this.busy) this.replyTo = 0; // no message to reply to, but the turn's draft still shows
             this.heard(a);
             this.push([{ type: "text", text: Object.entries(a).map(([q, v]) => `Ответ владельца на твой вопрос «${q}»: ${v}`).join("\n") }], "next", { kind: "human" });
           });
@@ -387,8 +382,7 @@ export class Architect {
           this.asking = undefined;
         }
       }
-      // сессия — тем же именем, что в закрепе: не «Остановить сессию в папке Анализ отзывов?», если в закрепе она
-      // «Анализ отзывов»; в «ёлочках» — имя не склоняется: «Остановить «Арена»?»
+      // the session under its dashboard name, in quotes, which also spares Russian declension
       const sess = async () => {
         const k = String(input.session ?? "");
         const r = await findSession(k).catch(() => undefined);
@@ -416,7 +410,7 @@ export class Architect {
         this.granted.delete(key);
         return { behavior: "allow", updatedInput: input };
       }
-      // Пока карточка открыта, ход ждёт её. Новое сообщение владельца ход отпускает, карточка остаётся — как у вопросов выше.
+      // While the card is open the turn waits for it; a new owner message releases the turn and the card stays, as above
       const ac = new AbortController();
       const onStop = () => ac.abort(signal.reason);
       signal.addEventListener("abort", onStop);
@@ -441,7 +435,7 @@ export class Architect {
         };
       }
       if (r === "yes") return { behavior: "allow", updatedInput: input };
-      // отказ — не конец хода: черновик не висит на «Выполняю команду», а ход идёт дальше без этого действия
+      // a refusal doesn't end the turn: the draft leaves "Running a command" and the turn goes on without the action
       this.thinking = r === "no" ? DENIED() : THINKING();
       this.scheduleDraft(true);
       if (typeof r === "object") return { behavior: "deny", message: r.tell };
@@ -453,7 +447,7 @@ export class Architect {
     const gate: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreToolUse") return {};
       const v = architectVerdict(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>);
-      // свои инструменты хоста безопасны по устройству — без вопросов; остальное решает режим auto
+      // the host's own tools are safe by design and need no question; auto mode decides the rest
       if (v.decision === "ok") return input.tool_name.startsWith("mcp__arch__") ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } } : {};
       if (v.decision === "ask" && OWNER_WORD.includes(input.tool_name)) {
         const ti = (input.tool_input ?? {}) as Record<string, unknown>;
@@ -492,7 +486,7 @@ export class Architect {
     });
   }
 
-  // До какого времени архитектор не может отвечать: кончился лимит Claude. undefined — может.
+  // Until when the architect can't reply because the Claude limit is out; undefined if it can
   downUntil(): number | undefined {
     const l = this.lastLimit;
     if (l?.status !== "rejected" || !l.resetsAt) return;
@@ -500,7 +494,7 @@ export class Architect {
     return at > Date.now() ? at : undefined;
   }
 
-  // Лимит подписки Claude: событие rate_limit_event в потоке и /usage (экспериментальный API SDK — только в обёртке).
+  // Claude plan limits from the SDK's experimental usage call (behind a cast), else from the last rate_limit_event
   async limits(): Promise<{ week?: number; weekResets?: string; fiveHour?: number; fiveHourResets?: string; status?: string } | undefined> {
     try {
       const q = this.q as unknown as { usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: (o: { skipBehaviors: boolean }) => Promise<{ rate_limits?: Record<string, { utilization: number | null; resets_at: string | null } | null> | null }> };
@@ -526,8 +520,7 @@ export class Architect {
         const at = new Date(i.resetsAt * (i.resetsAt < 1e12 ? 1000 : 1)).toISOString();
         const five = i.rateLimitType === "five_hour";
         const kind = five ? "пятичасовой" : "недельный";
-        // правда о том, кто стоит: сессии и мои ответы; сводку бот показывает и без меня.
-        // Докупить — кнопкой на страницу лимитов, она открывается с iPhone
+        // say what stops (sessions and my replies; the bot still shows the summary) and link the usage page
         await this.d.tg
           .send(
             tr(
@@ -540,7 +533,7 @@ export class Architect {
       return;
     }
     if (m.type === "system" && m.subtype === "init") {
-      this.crashedSince = undefined; // процесс поднялся
+      this.crashedSince = undefined; // the process is up
       if (m.session_id !== this.sessionId || readJson<{ promptHash?: string }>(STATE_FILE, {}).promptHash !== this.promptHash) {
         this.sessionId = m.session_id;
         writeJson(STATE_FILE, { sessionId: m.session_id, promptHash: this.promptHash });
@@ -548,10 +541,10 @@ export class Architect {
       return;
     }
     if (m.type === "stream_event") {
-      if (m.parent_tool_use_id) return; // поток помощника — не ответ владельцу
+      if (m.parent_tool_use_id) return; // a subagent's stream is not the reply
       const ev = m.event as { type: string; content_block?: { type: string }; delta?: { type: string; text?: string } };
       if (ev.type === "message_start") {
-        // новый шаг модели: прежний инструмент уже отработал, она думает — черновик не врёт «Выполняю команду…»
+        // a new model step: the last tool is done, so the draft must not say "Running a command…"
         if (this.busy && this.thinking !== DENIED()) {
           this.thinking = THINKING();
           this.scheduleDraft(true);
@@ -570,13 +563,13 @@ export class Architect {
       for (const b of m.message.content) {
         if (b.type === "text" && b.text.trim()) this.turnTexts.push(b.text.trim());
         else if (b.type === "tool_use") {
-          // текст перед инструментом — подводка («сейчас посмотрю»), ответом владельцу он не считается
+          // text before a tool call is a lead-in ("let me look"), not the reply
           if (this.turnTexts.length) this.lastTexts = this.turnTexts;
           this.turnTexts = [];
           this.live = "";
           if (b.name === "ToolSearch" || b.name === "TodoWrite") continue;
           if (b.name === "mcp__arch__follow_up") this.followed = true;
-          // в черновике — что делаю словами, без самих команд и путей
+          // the draft says what it is doing in words, without commands or paths
           this.thinking = tr(VERBS, VERBS_EN)[b.name] ?? (b.name.startsWith("mcp__") ? tr("Работаю с инструментами", "Using tools") : tr("Работаю", "Working"));
           this.scheduleDraft(true);
         }
@@ -584,10 +577,10 @@ export class Architect {
       return;
     }
     if (m.type === "result") {
-      writeJson(PENDING_FILE, null); // ответ дан (или ход оборвался и об этом сказано) — повторять не нужно
-      // служебные имена сессий («claude-e7») владельцу ничего не говорят; английская строка упора в лимит — по-русски
-      const answer = noOpener(limitRu((this.turnTexts.length ? this.turnTexts : this.lastTexts).join("\n\n")).replace(/\s?\((?:claude|architect|[a-z]+)-[0-9a-f]{2,4}\)/g, "").trim().replace(/^No response requested\.?$/i, "")); // служебный ответ модели на «ответь хоть что-то» — не владельцу
-      // цитата нужна, только если после вопроса в чате уже было другое; ответ на последнее сообщение — просто ответ
+      writeJson(PENDING_FILE, null); // answered, or the failure was reported: nothing to redo
+      // drop internal session names ("claude-e7"); Claude's English limit message goes into the owner's language
+      const answer = noOpener(limitRu((this.turnTexts.length ? this.turnTexts : this.lastTexts).join("\n\n")).replace(/\s?\((?:claude|architect|[a-z]+)-[0-9a-f]{2,4}\)/g, "").trim().replace(/^No response requested\.?$/i, ""));
+      // quote the question only when other messages came after it
       const asked = this.replyTo;
       const replyTo = asked !== undefined && this.d.tg.lastId > asked ? asked : undefined;
       const pressed = this.pressed;
@@ -597,14 +590,14 @@ export class Architect {
       try {
         if (this.stoppedByOwner) {
           this.stoppedByOwner = false;
-          // остановлен ответ архитектора, не сессии: так и сказать; короткую подводку («смотрю…») не показывать
+          // the architect's reply was stopped, not a session: say so, dropping a short lead-in ("looking…")
           const stop = tr("Остановил свой ответ. Сессии работают дальше.", "Stopped my reply. Sessions keep working.");
           await this.d.tg.send(answer.length > 160 ? `${answer}\n\n${stop}` : stop, { replyTo, from: "architect" });
         } else if ((r.subtype !== "success" || r.is_error) && this.lastLimit?.status === "rejected" && this.limitNoticeFor && (!answer || tr(/^\**Кончился .*лимит Claude/, /^\**\S+ Claude limit reached/).test(answer))) {
-          // об упоре в лимит уже сказано отдельным сообщением, по существу ответить нечем — не повторяем
+          // the limit was already reported in its own message and there is nothing to add
         } else if ((r.subtype !== "success" || r.is_error) && AUTH.test(`${(m as { result?: string }).result ?? ""} ${answer}`)) {
-          // вход в Claude сменился — старый процесс получает «Identity verification is
-          // required», новый работает: один раз сами поднимаем новый процесс того же разговора и повторяем его сообщение
+          // The Claude sign-in changed: the old process gets "Identity verification is required" while a new one works,
+          // so start a new process of the same conversation once and repeat the owner's message.
           const pending = readJson<{ text?: string; messageId?: number } | null>(PENDING_FILE, null);
           if (Date.now() - this.authRetryAt > 10 * 60_000) {
             this.authRetryAt = Date.now();
@@ -615,7 +608,7 @@ export class Architect {
             }
             this.relaunch();
           } else if (!this.authBroken) {
-            // сказать один раз; дальше, пока вход не вернётся, хост отвечает сводкой сам
+            // say it once; until sign-in works again the host answers with the summary itself
             this.authBroken = true;
             await this.d.tg.send(
               tr(
@@ -626,23 +619,22 @@ export class Architect {
             );
           }
         } else if (r.subtype !== "success" || r.is_error) {
-          // владельцу — без «API Error: 400 …» и кодов ошибок; сырое — в журнал
+          // no "API Error: 400 …" or codes for the owner; the raw error goes to the log
           log("architect", "ход кончился ошибкой", `${r.terminal_reason ?? r.subtype}: ${clip(answer, 300)}`);
           const said = answer.replace(/^.*API Error.*$/gim, "").trim();
           await this.d.tg.send(replyFailed(said, r.terminal_reason === "prompt_too_long" ? "too_long" : this.lastLimit?.status === "rejected" ? "limit" : "error"), { replyTo, from: "architect" });
         } else if (answer === PASSED() && pressed) {
-          // он нажал кнопку и видит «Выбрано … в 17:05» — квитанция «Передал» лишняя
+          // the owner tapped a button and already sees "Picked … at 17:05"
         } else if (answer) {
           const { text, steps } = splitSteps(answer);
-          // по кнопке в ряд: две рядом на iPhone обрезаются
-          // одна квитанция «Передал.» — без звука: он узнает о ней, когда посмотрит, а звонить ради неё незачем
+          // one button per row, since two side by side get cut on an iPhone; a bare "Passed on." is silent
           await this.d.tg.send(text, { replyTo, from: "architect", silent: answer === PASSED() || undefined, buttons: steps.length ? steps.map((s, k) => [{ text: s, data: `sg:${this.rememberSteps(steps)}:${k}` }]) : undefined });
-          // пообещал и не записал — напомнить записать; не чаще раза в 10 минут: ответ на напоминание не крутит его по кругу
+          // a promise without a follow_up: remind the architect, at most every 10 minutes so the reminder can't loop
           if (!this.followed && PROMISE().test(text) && Date.now() - this.nudgedAt > 10 * 60_000) {
             this.nudgedAt = Date.now();
             this.notify(`Ты написал владельцу обещание («${clip(text.replace(/\s+/g, " "), 200)}»), но не записал его. Запиши follow_up (что и когда), иначе оно потеряется. Если это не обещание — ничего не делай. Владельцу не пиши.`);
           }
-        } // ход без ответа (передал, поставил задачу) — тишина: реакцию-смайлик владелец читает как смайлик
+        } // a turn without a reply stays silent
       } catch (e) {
         log("architect", "ответ владельцу не ушёл", String(e));
       }
@@ -663,8 +655,8 @@ export class Architect {
     this.draftId = 1 + Math.floor(Math.random() * 2_000_000_000);
     this.d.tg.resetDraft();
     this.scheduleDraft(true);
-    // черновик живёт ~30 с — подтверждаем, пока идёт работа
-    this.keepAlive = setInterval(() => this.flushDraft(), 6_000); // и черновик живёт, и счётчик секунд идёт
+    // a draft lasts about 30 s: refresh it while the turn runs, which also ticks the seconds counter
+    this.keepAlive = setInterval(() => this.flushDraft(), 6_000);
   }
 
   private scheduleDraft(now = false) {
@@ -678,10 +670,9 @@ export class Architect {
   }
 
   private async flushDraft() {
-    if (!this.busy || this.replyTo === undefined) return; // разбор итога сессии идёт без «Думаю…» у владельца — он узнает только итог
+    if (!this.busy || this.replyTo === undefined) return; // host-started turns show no draft; the owner sees only the result
     this.lastDraftAt = Date.now();
-    // сколько уже думает — как «Думает 24 с» у чат-ботов: на максимальном усилии ответ идёт до двух минут, и счётчик
-    // показывает, что работа идёт: владельцу важно видеть живой ход, а не тишину
+    // elapsed time, as in chat apps' "Thinking 24 s": at max effort a reply can take two minutes
     const secs = Math.round((Date.now() - this.turnAt) / 1000);
     const took = tr(secs < 60 ? `${secs} с` : `${Math.floor(secs / 60)} мин${secs % 60 ? ` ${secs % 60} с` : ""}`, secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m${secs % 60 ? ` ${secs % 60}s` : ""}`);
     const thinking = this.thinking && secs >= 8 ? `${this.thinking} · ${took}` : this.thinking;
@@ -703,8 +694,8 @@ export class Architect {
     this.replyTo = undefined;
   }
 
-  // Сообщение владельца → ход архитектора. Пересланное и файлы подаются как данные.
-  // Пока идёт ход, новое сообщение доходит до архитектора между шагами (как реплика в терминале), «!» в начале — прервать и прочитать сразу.
+  // An owner message becomes an architect turn; forwarded text and files go in as data. During a turn a new message
+  // arrives between steps, like typing in a terminal; urgent interrupts the turn to read it right away.
   send(m: Incoming, note?: string, urgent = false) {
     this.asking?.();
     const parts: string[] = [];
@@ -734,15 +725,14 @@ export class Architect {
     if (urgent) void this.interrupt(false);
   }
 
-  // Служебное сообщение от хоста (не от владельца): итоги, тревоги, просьбы передать. Что бот уже отправил владельцу
-  // сам, — тут же: иначе после выкладки хост пришлёт снимок, а архитектор по итогу хода сессии — второй такой же.
-  // Время события — в нём: часов у модели нет, а правило ночи (0:00–8:00) без них не исполнить.
+  // A host event, not from the owner: summaries, alerts, requests to pass something on. It carries what the bot already
+  // sent by itself (so the architect doesn't send a second deploy screenshot) and the time, which the night rule needs.
   notify(text: string) {
     const seen = this.hostNews();
     this.push([{ type: "text", text: `${seen ? `${seen}\n\n` : ""}<host-event time="${hhmm()}">\n${text}\n</host-event>` }], "later", { kind: "channel", server: "architect-host" });
   }
 
-  // Что бот отправил владельцу без архитектора с его прошлого ответа — одним блоком; пусто — undefined.
+  // What the bot sent the owner by itself since the architect's last reply, as one block; undefined if nothing
   private hostNews(): string | undefined {
     const seen = this.d.tg.hostSent.splice(0);
     if (!seen.length) return;
@@ -759,7 +749,7 @@ export class Architect {
     await this.q?.interrupt().catch(() => {});
   }
 
-  // Новый процесс того же разговора (продолжение по sessionId): берёт нынешний вход в Claude
+  // A new process for the same conversation (resumed by sessionId), picking up the current Claude sign-in
   private relaunch() {
     this.fastRestart = true;
     this.stopFlag.stopped = true;

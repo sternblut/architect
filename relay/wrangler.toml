@@ -1,23 +1,23 @@
-# Дежурный архитектора (отвечает в Telegram, пока Mac спит) и ящик подключения новых Mac. Секретов нет (src/index.ts).
+# The architect's cloud relay (answers in Telegram while the Mac sleeps) and the connection mailbox. No secrets (src/index.ts).
 name = "archi-relay"
 main = "src/index.ts"
 compatibility_date = "2026-09-30"
 workers_dev = true
 send_metrics = false
 
-# журналы запросов выключены: в адресе webhook — путь, который должны знать только Telegram и Mac
+# request logs off: the webhook URL contains a path only Telegram and the Mac may know
 [observability]
 enabled = false
 
 [vars]
-# открытый ключ Mac (не секрет): bun src/relay-key.ts на Mac печатает его
+# the Mac's public key, not a secret: `bun src/relay-key.ts` on the Mac prints it
 MAC_KEY = ""
 
 [[durable_objects.bindings]]
 name = "RELAY"
 class_name = "Relay"
 
-# ящик подключения нового Mac: конверт менеджера на 15 минут, только шифр (src/box.ts)
+# connection mailbox: the manager's envelope for 15 minutes, ciphertext only (src/box.ts)
 [[durable_objects.bindings]]
 name = "BOX"
 class_name = "Box"

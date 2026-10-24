@@ -1,7 +1,7 @@
-// HTTP-приёмник хуков: только 127.0.0.1 и секретный заголовок.
-// /hook/*      — рабочие сессии архитектора (их хуки из --settings, со шлагбаумом);
-// /hook/any/*  — все остальные сессии Mac (общий хук из ~/.claude/settings.json): пока владелец за Mac — «решай в терминале»,
-//                отошёл — разрешения и вопросы идут в Telegram; вернулся — всё отпускается обратно в терминал.
+// Hook receiver: 127.0.0.1 only, with a secret header.
+// /hook/*      the architect's sessions (hooks from --settings, with the policy gate)
+// /hook/any/*  every other session on the Mac (the shared hook): while the owner is at the Mac the terminal decides;
+//              when they are away, permissions and questions go to Telegram, and on return go back to the terminal
 import { timingSafeEqual } from "node:crypto";
 import type { Approvals, Decision, Question } from "./approvals";
 import { config, tr } from "./config";
@@ -9,28 +9,25 @@ import { stopHolds } from "./holds";
 import { onReturn, ownerAway } from "./presence";
 import { listAgents, outbox, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
 import { candidateShots } from "./shots";
-import { ownerId, type Button } from "./telegram";
-import { foldLong } from "./ui";
+import { ownerId } from "./telegram";
 import { clip, log } from "./util";
 
 export type HookUI = {
   label(sessionId: string, cwd: string): string;
   threadFor(sessionId: string, cwd: string): Promise<number | undefined>;
-  turnEnded(sessionId: string, cwd: string, text: string, opts?: { silent?: boolean }): Promise<void>;
-  workerTurn(sessionId: string, cwd: string, text: string): Promise<void>; // итог сессии архитектора — ему на разбор
-  sessionQuestion(sessionId: string, cwd: string, text: string, opts: { held: boolean }): Promise<void>; // вопрос чужой сессии — архитектору на суждение
+  workerTurn(sessionId: string, cwd: string, text: string): Promise<void>; // a worker's turn summary, for the architect
+  sessionQuestion(sessionId: string, cwd: string, text: string, opts: { held: boolean }): Promise<void>; // another session's question, for the architect to judge
   alert(sessionId: string, cwd: string, text: string): Promise<void>;
-  post(sessionId: string, cwd: string, md: string, opts?: { silent?: boolean; buttons?: Button[][] }): Promise<number[]>;
   markHooked(sessionId: string): void;
   permissionDecided(sessionId: string, cwd: string, action: string, decision: Decision): void;
-  stopped?(sessionId: string, cwd: string): void; // любая сессия закончила ход — обещания архитектора о ней пора выполнить
+  stopped?(sessionId: string, cwd: string): void; // any session ended its turn: promises about it are due
 };
 
 const SIX_HOURS = 6 * 3600_000;
 const HOLD_MS = 2 * 3600_000;
-const BACK_AT_MAC = () => tr("Решите на Mac", "Decide on the Mac"); // подпись погасшей кнопки, когда владелец вернулся к Mac
+const BACK_AT_MAC = () => tr("Решите на Mac", "Decide on the Mac"); // shown on a request closed because the owner is back
 
-// Ошибки API и лимита — не вопросы владельцу и не повод писать ему
+// API and limit errors are not questions and not worth a message
 export const API_ERROR = /hit your (weekly |session |5-hour |)limit|usage limit|API Error|overloaded|rate.?limit|Credit balance|Please run \/login|Invalid API key|Prompt is too long/i;
 
 export const looksLikeQuestion = (t: string) => {
@@ -38,7 +35,7 @@ export const looksLikeQuestion = (t: string) => {
   return /\?\s*(\*\*|_|»|")?\s*$/.test(tail) || /\?\s*\n/.test(tail) || /(жду (вашего|ваш|«|от вас)|скажите|выберите|подтвердите|ответьте|нужн[оа] ваш)/i.test(tail);
 };
 
-// Записка архитектора сессии (message_session, note) — не слова владельца: в его кавычки не берётся
+// The architect's own note to a session (message_session with note) is not quoted as the owner's words
 export const ARCH_NOTE = "Архитектор от себя — это не слова владельца: ";
 export function ownerWords(msgs: string[]) {
   const own = msgs.filter((m) => !m.includes(ARCH_NOTE));
@@ -46,7 +43,7 @@ export function ownerWords(msgs: string[]) {
   return [said, ...msgs.filter((m) => m.includes(ARCH_NOTE))].filter(Boolean).join("\n\n");
 }
 
-// Сессию ведёт цель /goal или другой Stop-хук: она идёт дальше сама, держать её нельзя — ответ доставим при следующей остановке.
+// A /goal or another Stop hook keeps the session going, so it can't be held; the answer is delivered at the next stop
 function goalDriven(body: Record<string, any>, sid: string, cwd: string) {
   if (body.stop_hook_active) return true;
   try {
@@ -64,7 +61,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     return got.length === expected.length && timingSafeEqual(got, expected) && (host === `127.0.0.1:${config.hookPort}` || host === `localhost:${config.hookPort}`);
   };
 
-  // вернулся к Mac — всё ждущее отпускаем обратно в терминал
+  // back at the Mac: everything waiting goes back to the terminal
   const pending = new Set<AbortController>();
   onReturn(() => {
     for (const c of pending) c.abort(BACK_AT_MAC());
@@ -78,7 +75,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     return { signal: c.signal, done: () => pending.delete(c) };
   };
   const lastAsked = new Map<string, { text: string; at: number }>();
-  // Носитель секрета не должен писать владельцу от имени произвольной сессии: текст принимаем только от сессий, которые хост знает
+  // Whoever holds the secret must not message the owner as an arbitrary session: text only from sessions the host knows
   let knownCache = { at: 0, ids: new Set<string>() };
   async function known(sid: string): Promise<boolean> {
     if (!sid) return false;
@@ -96,7 +93,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: config.hookPort,
-    idleTimeout: 0, // ответа владельца ждём часами
+    idleTimeout: 0, // the owner's answer can take hours
     async fetch(req) {
       const url = new URL(req.url);
       if (req.method !== "POST" || !url.pathname.startsWith("/hook/")) return new Response("not found", { status: 404 });
@@ -116,7 +113,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
         switch (url.pathname) {
           case "/hook/pre": {
             const r = await onPre(body, sid, cwd);
-            // хук уже сдался ждать — сообщения владельца вернуть в очередь, а не потерять
+            // the hook gave up waiting: put the owner's messages back in the queue
             if (req.signal.aborted && "additionalContext" in r && r.queued) for (const m of r.queued) outbox.push(sid, m);
             const { queued: _q, ...out } = r as { queued?: string[] };
             return Response.json(out);
@@ -127,7 +124,8 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
             if (!(await known(sid))) return Response.json({});
             return Response.json(await onStop(body, sid, cwd));
           case "/hook/stopfail": {
-            // тревоги — архитектору (main.ts), не владельцу. Упор в лимит не шлём и ему: он и сам упёрся, сессия продолжит после сброса
+            // Alerts go to the architect (main.ts), not the owner. A rate limit isn't sent even there: the architect hit it
+            // too, and the session resumes after the reset.
             if (!(await known(sid))) return Response.json({});
             const err = String(body.error ?? "unknown");
             if (err === "rate_limit") log("hooks", "ход сессии упёрся в лимит", { sid: sid.slice(0, 8) });
@@ -145,7 +143,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
           case "/hook/any/stop":
             return Response.json(await anyStop(body, sid, cwd, req.signal));
           case "/hook/ask": {
-            // `archi ask`: скрипт на Mac спрашивает владельца кнопкой (например, перед push в main). Решает только владелец.
+            // `archi ask`: a script on the Mac asks the owner with a button, say before a push to main
             const decision = await approvals.confirm({ source: clip(String(body.source ?? "Mac"), 60), action: clip(String(body.action ?? ""), 2000), reason: body.reason ? clip(String(body.reason), 600) : undefined, timeoutMs: 30 * 60_000, signal: req.signal });
             return Response.json({ decision });
           }
@@ -157,7 +155,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     },
   });
 
-  // ── рабочие сессии архитектора ─────────────────────────────────────────────
+  // ── workers ────────────────────────────────────────────────────────────────
 
   async function onPre(body: Record<string, any>, sid: string, cwd: string) {
     if (body.tool_name === "AskUserQuestion") {
@@ -169,7 +167,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     return msgs.length ? { additionalContext: ownerWords(msgs), queued: msgs } : {};
   }
 
-  // Запрос разрешения — бриф решения (approvals → brief.ts); к выкладке — снимки кандидата, которые сделала сама сессия.
+  // A permission request becomes a decision brief (approvals → brief.ts), with the session's candidate shots for a deploy
   async function onPermission(body: Record<string, any>, sid: string, cwd: string, signal: AbortSignal) {
     const action = describe(body);
     const decision = await approvals.confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: SIX_HOURS - 120_000, signal, threadId: await ui.threadFor(sid, cwd) });
@@ -180,17 +178,17 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
   async function onStop(body: Record<string, any>, sid: string, cwd: string) {
     const text = String(body.last_assistant_message ?? "").trim();
     const msgs = outbox.take(sid);
-    if (msgs.length) return { decision: "block", reason: ownerWords(msgs) }; // владелец уже ответил — сессия идёт дальше, итог не нужен
+    if (msgs.length) return { decision: "block", reason: ownerWords(msgs) }; // the owner already answered: no summary needed
     if (text) await ui.workerTurn(sid, cwd, text);
     ui.stopped?.(sid, cwd);
     return {};
   }
 
-  // ── все остальные сессии Mac ───────────────────────────────────────────────
+  // ── all other sessions on the Mac ──────────────────────────────────────────
 
   async function anyPermission(body: Record<string, any>, sid: string, cwd: string, reqSignal: AbortSignal) {
     ui.markHooked(sid);
-    if (!ownerId() || !(await ownerAway())) return {}; // Telegram не привязан или владелец за Mac — решает терминал
+    if (!ownerId() || !(await ownerAway())) return {}; // not paired, or the owner is at the Mac: the terminal decides
     const action = describe(body);
     const w = watch(reqSignal);
     try {
@@ -204,7 +202,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
 
   async function anyQuestion(body: Record<string, any>, sid: string, cwd: string, reqSignal: AbortSignal) {
     ui.markHooked(sid);
-    if (!ownerId() || !(await ownerAway())) return {}; // Telegram не привязан или владелец за Mac — решает терминал
+    if (!ownerId() || !(await ownerAway())) return {};
     const questions = (body.tool_input?.questions ?? []) as Question[];
     const w = watch(reqSignal);
     try {
@@ -223,14 +221,14 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     ui.stopped?.(sid, cwd);
     const text = String(body.last_assistant_message ?? "").trim();
     if (!text || !ownerId() || !(await ownerAway())) return {};
-    // по умолчанию — тишина: отчёты, ошибки API и лимита владельцу не пересылаем; вопрос — архитектору на суждение
+    // silent by default: reports and API or limit errors are not forwarded; a question goes to the architect
     if (API_ERROR.test(text) || !looksLikeQuestion(text)) return {};
     const prev = lastAsked.get(sid);
     const repeat = prev?.text === text && Date.now() - prev.at < 3600_000;
     lastAsked.set(sid, { text, at: Date.now() });
     let held = !goalDriven(body, sid, cwd);
     if (!held) {
-      // сессия с целью /goal идёт сама — не держим; снова ждёт того же (крутится вхолостую, тратит лимит) — держим, цель остаётся
+      // a /goal session goes on by itself and isn't held, unless it asks the same again (spinning, burning the limit)
       let spins = 0;
       try {
         spins = spinCount(readTail(transcriptPath(cwd, sid), 300_000), 10 * 60_000);
@@ -247,14 +245,14 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
   return server;
 }
 
-// Сырое действие — для журнала решений и наблюдателя (ждать ли выкладку); владелец видит бриф.
+// The raw action, for the decision log and the watcher (whether to wait for a deploy); the owner sees the brief
 function describe(body: Record<string, any>) {
   const tool = String(body.tool_name ?? "");
   const input = (body.tool_input ?? {}) as Record<string, unknown>;
   return tool === "Bash" ? String(input.command ?? "") : `${tool}: ${toolBrief(tool, input) || JSON.stringify(input).slice(0, 600)}`;
 }
 
-// Из чего собирается бриф: инструмент, его вход, папка сессии, её снимки кандидата; своя ли это рабочая сессия (её можно попросить снять кандидата).
+// Inputs of the brief: tool, input, session folder, candidate shots, and whether it is a worker (which can be asked for shots)
 function asked(body: Record<string, any>, sid: string, cwd: string) {
   const w = workers.get(sid);
   return { tool: String(body.tool_name ?? ""), input: (body.tool_input ?? {}) as Record<string, unknown>, cwd, shots: candidateShots(w?.id), worker: !!w };
@@ -267,7 +265,7 @@ function permissionReply(decision: Decision) {
     behavior: "deny",
     message:
       typeof decision === "object"
-        ? decision.tell // «Сначала покажи» / «Сначала объясни»: не отказ, сессия спросит снова
+        ? decision.tell // "Show me first" / "Explain first": not a refusal, the session asks again
         : decision === "no"
         ? "Владелец отказал в Telegram. Не повторяй это действие и не обходи отказ; если без него нельзя — объясни владельцу и спроси, как быть."
         : "Владелец не ответил вовремя — считается отказом. Продолжай без этого действия или спроси владельца ещё раз позже.",

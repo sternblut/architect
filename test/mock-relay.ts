@@ -1,7 +1,7 @@
-// Подставной ящик и раздача для живых проверок (127.0.0.1). Это образец протокола ящика:
-//   POST /v1/box/{id}          — положить конверт (JSON до 8 КБ; в ящике до 8 конвертов, живут 15 минут) → 201
-//   GET  /v1/box/{id}?wait=25  — {messages: [...]}: сразу, если есть, иначе ждём до wait секунд
-// Ни ключей, ни паролей: сервер хранит только шифр. Плюс раздача: /i (установщик), /archi.tgz.
+// A mock box and distribution server for live checks (127.0.0.1), following the box protocol:
+//   POST /v1/box/{id}          put an envelope (JSON up to 8 KB; up to 8 per box, kept 15 minutes) → 201
+//   GET  /v1/box/{id}?wait=25  {messages: [...]} right away if any, else after waiting up to wait seconds
+// No keys or passwords: the server keeps only ciphertext. It also serves the distribution: /i (installer), /archi.tgz.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -11,7 +11,7 @@ export class MockRelay {
   server: ReturnType<typeof Bun.serve>;
   url: string;
   boxes = new Map<string, Box>();
-  bodies: string[] = []; // всё, что пришло в ящик, как есть — проверка «нигде нет токена открытым текстом»
+  bodies: string[] = []; // every raw body posted, to check that no token travels in the clear
 
   constructor(private dist: string) {
     this.server = Bun.serve({ port: 0, idleTimeout: 60, fetch: (req) => this.handle(req) });

@@ -1,5 +1,5 @@
-// Ящик подключения нового Mac в облаке (relay/src/index.ts, класс Box): тот же протокол, что у образца test/mock-relay.ts,
-// и с ним работает настоящий клиент src/box.ts — менеджер кладёт конверт, Mac забирает его, открывает и проверяет подпись.
+// The cloud connection mailbox (relay/src/index.ts, class Box) speaks the same protocol as test/mock-relay.ts and works
+// with the real client in src/box.ts: the manager posts an envelope, the Mac takes it, opens it and checks the signature.
 import { expect, test } from "bun:test";
 import worker, { Box } from "../relay/src/index";
 import { boxId, deviceKeys, managerKey, newManagerKey, open, postBox, seal, waitBox } from "../src/box";
@@ -17,7 +17,7 @@ function memStorage() {
   };
 }
 
-// Durable Object на каждый ящик, как в Cloudflare: idFromName → один и тот же экземпляр
+// One Durable Object per box, as in Cloudflare: idFromName → the same instance
 function boxes() {
   const all = new Map<string, Box>();
   const storages = new Map<string, ReturnType<typeof memStorage>>();
@@ -32,7 +32,7 @@ function boxes() {
   };
 }
 
-test("ящик: настоящий клиент кладёт и забирает конверт через облачный Worker; подпись и шифр сходятся", async () => {
+test("box: the real client posts and fetches an envelope through the Worker; signature and ciphertext check out", async () => {
   const BOX = boxes();
   const env = { BOX, RELAY: undefined as never, MAC_KEY: "" };
   const server = Bun.serve({ port: 0, fetch: (req) => worker.fetch(req, env) });
@@ -41,21 +41,21 @@ test("ящик: настоящий клиент кладёт и забирает
     const mac = await deviceKeys();
     const mgr = await managerKey(await newManagerKey());
     const id = await boxId(mac.pub);
-    const waiting = waitBox(relay, id, 5); // Mac ждёт раньше, чем менеджер положит конверт
+    const waiting = waitBox(relay, id, 5); // the Mac waits before the manager posts
     await Bun.sleep(100);
     const letter = { v: 1 as const, token: "123456789:AAH-test-token-for-the-box-protocol", bot: { id: 7, username: "x_bot" }, owner: { id: 42, name: "Новый человек" }, manager: "sapfirarchitect_bot", at: Date.now() };
     await postBox(relay, id, await seal(letter, mac.pub, mgr.priv));
     const got = await waiting;
     expect(got.length).toBe(1);
     expect(await open(got[0], mac.priv, mac.pub, mgr.pub)).toMatchObject({ token: "123456789:AAH-test-token-for-the-box-protocol", owner: { id: 42 } });
-    // в хранилище облака — только шифр: токена открытым текстом там нет
+    // the cloud storage holds only ciphertext
     expect(JSON.stringify([...BOX.storages.get(id)!.m.values()])).not.toContain("AAH-test-token");
   } finally {
     server.stop(true);
   }
 });
 
-test("ящик: до 8 конвертов по 8 КБ, стирается целиком через 15 минут; чужие пути и методы — 404", async () => {
+test("box: up to 8 envelopes of 8 KB, erased after 15 minutes; other paths and methods get 404", async () => {
   const storage = memStorage();
   const box = new Box({ storage });
   const put = (body: string) => box.fetch(new Request("https://r/v1/box/abcdefghijklmnop", { method: "POST", body }));

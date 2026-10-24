@@ -1,11 +1,11 @@
-// Общий хук для всех сессий Claude Code: `bun src/install-hooks.ts install | uninstall | status`.
-// Пишет в ~/.claude/settings.json три записи (PermissionRequest, PreToolUse на AskUserQuestion, Stop) и больше ничего не трогает.
-// Свои записи узнаёт по пути к anyhook.ts; перед правкой кладёт копию настроек в state/backups/.
+// The shared hook for every Claude Code session: `bun src/install-hooks.ts install | uninstall | status`.
+// Writes three entries to ~/.claude/settings.json (PermissionRequest, PreToolUse for AskUserQuestion, Stop) and nothing else.
+// Finds its own entries by the path to anyhook.ts and backs the file up to state/backups/ before each change.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ARCH_HOME, HOME, STATE, tr } from "./config";
 
-const SETTINGS = process.env.ARCH_USER_SETTINGS ?? join(HOME, ".claude", "settings.json"); // в тестах — свой файл
+const SETTINGS = process.env.ARCH_USER_SETTINGS ?? join(HOME, ".claude", "settings.json"); // tests use their own file
 const SCRIPT = join(ARCH_HOME, "src", "anyhook.ts");
 const COMMAND = `'${process.execPath}' '${SCRIPT}'`;
 
@@ -27,7 +27,7 @@ function save(s: Settings, indent: number) {
     copyFileSync(SETTINGS, join(dir, `settings.json.${new Date().toISOString().replace(/[:.]/g, "-")}`));
   }
   const mode = existsSync(SETTINGS) ? statSync(SETTINGS).mode & 0o777 : 0o600;
-  mkdirSync(dirname(SETTINGS), { recursive: true }); // на новом Mac ~/.claude может ещё не быть
+  mkdirSync(dirname(SETTINGS), { recursive: true }); // ~/.claude may not exist yet
   const tmp = `${SETTINGS}.arch-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(s, null, indent) + "\n", { mode });
   renameSync(tmp, SETTINGS);

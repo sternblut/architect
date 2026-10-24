@@ -1,8 +1,7 @@
-// Утренний итог в 8:00 собирает хост из фактов, а не модель: модель может присочинить,
-// а упрись она в лимит — итога не было бы вовсе. Первая строка — что нужно от владельца; дальше — кто работал ночью
-// и что сделал (строка слоя понимания), новые страницы кнопками. Что бот ночью отложил, сюда не сыплется: таких строк
-// бывает больше десятка, и многие — устаревшие цифры лимита. Их читает архитектор и дописывает главное сам; только
-// если он не может ответить (кончился лимит), отложенное идёт сюда же — последними пятью.
+// The 8:00 summary is built by the host from facts, not by the model: nothing is made up, and it arrives even when the
+// limit is out. First what the owner needs to do, then who worked overnight and what they did, then new pages as buttons.
+// Messages held back overnight go to the architect, which adds what matters; only when it can't reply do the last five
+// go here.
 import { tr } from "./config";
 import { headline, problemLines, waitingLines, type View } from "./status";
 import type { Button } from "./telegram";
@@ -12,29 +11,29 @@ export type NightWork = { name: string; doing?: string; until: number };
 export type NightPage = { name: string; title?: string; url: string };
 
 const dot = (x: string) => (/[.?!…:]$/.test(x) ? x : `${x}.`);
-// «Собрала 12 снимков» после тире — со строчной: «A* — собрала 12 снимков»; «GitHub» и «I» по-английски не трогаем
+// Lowercase after the dash: "A* — собрала 12 снимков". In English only a plain capitalized word, so "GitHub" and "I" stay
 const low = (x: string) => (tr(/^\p{Lu}\p{Ll}/u, /^[A-Z][a-z]+\b/).test(x) ? x.charAt(0).toLowerCase() + x.slice(1) : x);
-// имя уже стоит перед тире: «Анализ отзывов — анализ отзывов поставлен на паузу»
+// The name is already before the dash: no "Reviews — reviews paused"
 const withoutName = (doing: string, name: string) => (doing.toLowerCase().startsWith(name.toLowerCase()) ? doing.slice(name.length).replace(/^[\s,:—–-]+/, "") : doing);
 
 export function morningMd(o: { view: View; worked: NightWork[]; pages: NightPage[]; held?: string[] }): { md: string; buttons: Button[][] } {
   const v = o.view;
-  // теми же словами и строками, что сводка: свой вопрос архитектора — сам вопрос, у сессии — имя и что от вас нужно
+  // the same lines as the dashboard
   const lines: string[] = [`**${tr("Утро.", "Morning.")}** ${headline(v)}${v.waiting.length ? ":" : "."}`, ...waitingLines(v.waiting).map(dot)];
-  // что ломает работу — отдельным абзацем, как в сводке: не путать с решениями
+  // problems get their own paragraph, apart from decisions
   const problems = problemLines(v).map(dot);
-  // группы — отдельными абзацами, как в закрепе: «Ждут вашей проверки» читалось ещё одним пунктом ночного списка
+  // each group is its own paragraph, as in the pinned message
   const night: string[] = [];
   if (o.worked.length) {
     night.push(tr("Ночью работали:", "Worked overnight:"));
-    // самые занятые — первыми, не больше пяти; что сделала — целыми фразами, не обрывая на полуслове
+    // at most five, in whole sentences
     for (const w of o.worked.slice(0, 5))
       night.push(dot(w.doing ? `${w.name} — ${low(sentences(withoutName(w.doing, w.name), 140))}` : tr(`${w.name} — работала до ${hhmm(new Date(w.until))}`, `${w.name} — worked until ${hhmm(new Date(w.until))}`)));
     if (o.worked.length > 5) night.push(tr(`И ещё ${o.worked.length - 5}.`, `And ${o.worked.length - 5} more.`));
   } else night.push(tr("Ночью работы не было.", "No work overnight."));
   const accept = v.accept.length ? [dot(tr(`${v.accept.length === 1 ? "Ждёт" : "Ждут"} вашей проверки: ${v.accept.map((i) => i.name).join(", ")}`, `Ready for your review: ${v.accept.map((i) => i.name).join(", ")}`))] : [];
   const held = o.held?.length ? [tr("Ночью отложил:", "Held back overnight:"), ...o.held.slice(-5).map((h) => dot(clip(h.replace(/\s+/g, " "), 160)))] : [];
-  // заголовок страницы уже с именем сессии — без повтора, иначе выйдет «Регламенты: Регламенты: черновик»
+  // no "Docs: Docs: draft" when the title already starts with the name
   const label = (p: NightPage) => (!p.title ? p.name : p.title.toLowerCase().startsWith(p.name.toLowerCase()) ? p.title : `${p.name}: ${p.title}`);
   const buttons = o.pages.slice(0, 6).map((p) => [{ text: clip(label(p), 40), url: p.url }]);
   const pages = o.pages.length

@@ -1,5 +1,5 @@
 {
-  "description": "Questions, permission requests and end-of-turn questions of every Claude Code session reach Telegram while you are away from the Mac (src/anyhook.ts). Before /architect:connect they do nothing.",
+  "description": "While you are away from the Mac, permission requests and multiple-choice questions of every Claude Code session go to Telegram, and end-of-turn questions to the architect (src/anyhook.ts). Inactive until /architect:connect.",
   "hooks": {
     "PermissionRequest": [
       { "hooks": [{ "type": "command", "command": "ARCH_DATA=\"${CLAUDE_PLUGIN_DATA}\" bun \"${CLAUDE_PLUGIN_ROOT}/src/anyhook.ts\"", "timeout": 21600 }] }

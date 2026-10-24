@@ -1,5 +1,5 @@
-// Шлагбаум: что можно без вопросов, что только после «да» владельца в Telegram, что нельзя совсем.
-// Правила только ограничивают: прав сверх тех, что у сессии уже есть, они не дают.
+// The policy gate: what runs freely, what waits for the owner's yes in Telegram, what is refused.
+// Rules only restrict: they never grant more than the session already has.
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -13,7 +13,7 @@ export type PolicyContext = {
   spendPattern?: string;
   keychainService: string;
   branch?: (cwd: string) => string;
-  ask?: string[]; // о каких из пяти дел владельца спрашивать; без поля — обо всех
+  ask?: string[]; // which of the owner's five points to ask about; all of them when absent
 };
 
 const OK: Verdict = { decision: "ok", reason: "" };
@@ -25,12 +25,12 @@ function worst(a: Verdict, b: Verdict): Verdict {
   return rank[b.decision] > rank[a.decision] ? b : a;
 }
 
-// ── разбор командной строки ──────────────────────────────────────────────────
+// ── command line parsing ─────────────────────────────────────────────────────
 
 type Parsed = { commands: string[][]; nested: string[]; piped?: Set<number> };
 
-// Делит строку на команды по ; && || | & и переводам строк, учитывая кавычки.
-// Содержимое $(...) и `...` возвращает отдельно, чтобы проверить его тоже.
+// Splits a command line on ; && || | & and newlines, respecting quotes. The contents of $(...) and `...` are
+// returned separately so they are checked too.
 export function parseShell(src: string): Parsed {
   const commands: string[][] = [];
   const nested: string[] = [];
@@ -38,7 +38,7 @@ export function parseShell(src: string): Parsed {
   let cur: string[] = [];
   let tok = "";
   let has = false;
-  let stdinNext = false; // herestring (<<<): следующее слово — stdin команды
+  let stdinNext = false; // here-string (<<<): the next word is the command's stdin
   const heredocs: { delim: string; strip: boolean; target: string[] }[] = [];
   const push = () => {
     if (has) {
@@ -59,7 +59,7 @@ export function parseShell(src: string): Parsed {
     pipedNext = false;
   };
   const readSub = (i: number): [string, number] => {
-    // i указывает на символ после "$("
+    // i points just past "$("
     let depth = 1;
     let j = i;
     let q: string | null = null;
@@ -123,11 +123,11 @@ export function parseShell(src: string): Parsed {
       has = true;
       i = k < 0 ? src.length : k;
     } else if (c === "|" && src[i + 1] !== "|") {
-      // пайп: следующая команда получает stdin предыдущей — помечаем её, чтобы ловить «… | sh»
+      // a pipe: mark the next command as reading stdin, to catch "… | sh"
       end();
       pipedNext = true;
     } else if (c === "\n" && heredocs.length) {
-      // тела heredoc — со следующей строки до строки-ограничителя: это stdin своей команды, а не команды оболочки
+      // heredoc bodies, from the next line to the delimiter line: stdin of their command, not shell commands
       end();
       let j = i + 1;
       for (const h of heredocs) {
@@ -147,8 +147,8 @@ export function parseShell(src: string): Parsed {
       end();
       if ((c === "&" || c === "|") && src[i + 1] === c) i++;
     } else if (c === "<" && src[i + 1] === "<") {
-      // heredoc (<<СЛОВО … СЛОВО) и herestring (<<<): stdin команды, не файл. Оболочка исполнит его как команды,
-      // интерпретатор — как код, прочим командам это данные (commandRules)
+      // heredoc (<<WORD … WORD) and here-string (<<<): the command's stdin, not a file. A shell runs it as commands,
+      // an interpreter as code; for other commands it is data (commandRules).
       push();
       i += 2;
       if (src[i] === "<") stdinNext = true;
@@ -171,7 +171,7 @@ export function parseShell(src: string): Parsed {
         heredocs.push({ delim, strip, target: cur });
       }
     } else if (c === ">") {
-      // перенаправление вывода: цель помечается маркером (усечение файла — тоже удаление); дескриптор перед «>» (2>) — не аргумент
+      // output redirection: mark the target (truncating a file deletes it too); a descriptor before ">" (2>) is not an argument
       if (/^[0-9]$/.test(tok) && has) {
         tok = "";
         has = false;
@@ -179,7 +179,7 @@ export function parseShell(src: string): Parsed {
       const append = src[i + 1] === ">";
       if (append) i++;
       if (src[i + 1] === "&") {
-        i++; // 2>&1 — не файл: пропускаем номер дескриптора
+        i++; // 2>&1 is not a file
         while (/[0-9-]/.test(src[i + 1] ?? "")) i++;
       } else {
         while (src[i + 1] === " " || src[i + 1] === "\t") i++;
@@ -187,7 +187,7 @@ export function parseShell(src: string): Parsed {
         has = true;
       }
     } else if (c === "(" || c === ")" || c === "{" || c === "}") {
-      // группы и подоболочки: просто границы команд
+      // groups and subshells only delimit commands
       if (c === "(" || c === ")" || !has) end();
       else tok += c;
     } else if (c === " " || c === "\t") {
@@ -206,7 +206,7 @@ export function parseShell(src: string): Parsed {
 
 const WRAPPERS = new Set(["sudo", "nohup", "time", "exec", "command", "builtin", "caffeinate", "stdbuf", "unbuffer"]);
 
-// Снимает приставки: VAR=1, env, sudo, nice -n 5, timeout 30 и т. п.
+// Strips prefixes: VAR=1, env, sudo, nice -n 5, timeout 30 and the like
 export function stripPrefixes(t: string[]): string[] {
   let i = 0;
   while (i < t.length) {
@@ -225,20 +225,20 @@ export function stripPrefixes(t: string[]): string[] {
     } else if (basename(w) === "timeout" || basename(w) === "gtimeout") {
       i++;
       while (i < t.length && t[i].startsWith("-")) i++;
-      i++; // длительность
+      i++; // the duration
     } else break;
   }
   return t.slice(i);
 }
 
-// ── правила ──────────────────────────────────────────────────────────────────
+// ── rules ────────────────────────────────────────────────────────────────────
 
 const SAFE_RM =
   /^(\.\/)?((dist|build|out|\.cache|coverage|test-results|playwright-report|node_modules|tmp|\.tmp|artifacts|\.next|\.astro|\.turbo|\.parcel-cache|__pycache__|\.pytest_cache|\.venv-tmp)(\/|$))|^(\/tmp\/|\/private\/tmp\/|\/private\/var\/folders\/|\$TMPDIR\/|\$\{TMPDIR\}\/|\$CLAUDE_JOB_DIR\/tmp\/|\$\{CLAUDE_JOB_DIR\}\/tmp\/)|^(~|\/Users\/[^/]+)\/\.claude\/jobs\/[\w-]+\/tmp(\/|$)|\.pyc$/;
 
-// Код другого языка (python3 -c, node -e, python3 - <<EOF): спросить только об удалении и о делах владельца внутри —
-// push, слиянии, выкладке, письме. Запись, сеть и запуск программ — обычная работа исследования и сборки: владелец
-// не хочет кнопку на каждый шаг.
+// Inline code in another language (python3 -c, node -e, python3 - <<EOF): ask only about deleting and the owner's
+// business inside it (push, merge, deploy, email). Writing files, network and running programs are ordinary research
+// and build work that shouldn't need a button each time.
 const CODE_DELETES = /\b(unlink|rmtree|rmSync|rmdirSync|rimraf|unlinkSync|removedirs)\b|\bos\.(remove|rmdir|truncate)\b|\.(unlink|rmdir)\(|\bfs\.(promises\.)?(rm|unlink|truncate)\w*|\bFile\.(delete|unlink)\b/;
 const CODE_OWNER_DEEDS = /\brm\s+-[a-zA-Z]*[rf]|\bgit\s+push\b|\bgh\s+pr\s+merge\b|\b(deploy|publish)\b|\bscp\b|\brsync\b|\|\s*(ba|z)?sh\b/;
 const CODE_MAILS = /\bsendmail\b|\bsmtplib\b/;
@@ -249,7 +249,7 @@ const INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "fish", "python", "py
 
 const GIT_EXEC_KEY = /^(core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass)|credential\.|diff\.external|gpg\.|sequence\.editor|filter\.|merge\.[^=]*\.driver|diff\.[^=]*\.(textconv|command)|uploadpack\.packobjectshook|protocol\.ext\.allow)/i;
 function gitRules(t: string[], ctx: PolicyContext): Verdict {
-  // пропускаем глобальные ключи git: -C <путь>, -c <k=v>, --git-dir=…, --no-pager
+  // skip git's global options: -C <path>, -c <k=v>, --git-dir=…, --no-pager
   let i = 1;
   let cwd = ctx.cwd;
   while (i < t.length && t[i].startsWith("-")) {
@@ -257,9 +257,8 @@ function gitRules(t: string[], ctx: PolicyContext): Verdict {
       cwd = t[i + 1] ?? cwd;
       i += 2;
     } else if (t[i] === "-c") {
-      // настройка, которая запускает программу (core.sshCommand, core.pager…): git исполнит её без шлагбаума
-      // (иначе «git -c core.sshCommand=… ls-remote» проходит без вопроса)
-      // core.hooksPath=/dev/null хуки выключает — это безопаснее, а не опаснее
+      // a setting that runs a program (core.sshCommand, core.pager…) would run it past the gate;
+      // core.hooksPath=/dev/null only turns hooks off
       if (GIT_EXEC_KEY.test(t[i + 1] ?? "") && !/^core\.hookspath=\/dev\/null$/i.test(t[i + 1] ?? "")) return ask("git запускает программу из своей настройки");
       i += 2;
     } else i++;
@@ -267,8 +266,8 @@ function gitRules(t: string[], ctx: PolicyContext): Verdict {
   const sub = t[i];
   const args = t.slice(i + 1);
   const branch = () => (ctx.branch ? ctx.branch(cwd) : "");
-  // встроенные команды git (git --list-cmds=main) без тех, что пишут людям, переписывают историю, удаляют
-  // недостижимое, отдают секреты или поднимают сервер: незнакомое имя — возможно, алиас, за ним бывает push
+  // git's built-in commands (git --list-cmds=main) minus those that email people, rewrite history, prune unreachable
+  // objects, hand out secrets or start a server. An unknown name may be an alias hiding a push.
   const KNOWN = new Set(["add", "am", "annotate", "apply", "archive", "backfill", "bisect", "blame", "branch", "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "cherry", "cherry-pick", "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config", "count-objects", "describe", "diagnose", "diff", "diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool", "fetch", "flow", "fmt-merge-msg", "for-each-ref", "format-patch", "fsck", "fsck-objects", "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history", "index-pack", "init", "interpret-trailers", "last-modified", "lfs", "log", "ls-files", "ls-remote", "ls-tree", "mailinfo", "mailsplit", "merge", "merge-base", "merge-file", "merge-tree", "mktag", "mktree", "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-refs", "patch-id", "pull", "push", "range-diff", "read-tree", "rebase", "reflog", "refs", "remote", "repack", "replay", "repo", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "shortlog", "show", "show-branch", "show-index", "show-ref", "sparse-checkout", "stash", "status", "stripspace", "submodule", "subtree", "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index", "update-ref", "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "worktree", "write-tree"]);
   if (sub === "config" && args.some((a) => /^alias\./.test(a))) return ask("git-алиас может скрывать push или удаление");
   if (sub && !sub.startsWith("-") && !KNOWN.has(sub)) return ask(`git ${sub} — неизвестная подкоманда (алиас?)`);
@@ -281,7 +280,7 @@ function gitRules(t: string[], ctx: PolicyContext): Verdict {
     if (refs.some((r) => r.startsWith("+") || r.startsWith(":"))) return ask("push с перезаписью или удалением на GitHub");
     if (refs.some((r) => /(^|:|\/)(main|master)$/.test(r))) return ask("push в main — это выкладка");
     if (!refs.length && ["main", "master"].includes(branch())) return ask("push в main — это выкладка");
-    // «git push origin HEAD» с ветки main — тот же push в main
+    // "git push origin HEAD" from main is a push to main
     if (refs.some((r) => /^(HEAD|@)$/.test(r)) && ["main", "master"].includes(branch())) return ask("push в main — это выкладка");
     return OK;
   }
@@ -352,16 +351,16 @@ function deployCli(cmd: string, t: string[]): Verdict {
     case "helm":
       return has("install", "upgrade", "uninstall", "rollback", "delete") ? ask("изменение кластера") : OK;
     case "aws":
-      // новые машины и ресурсы («aws ec2 run-instances») — это траты
+      // new machines and resources ("aws ec2 run-instances") cost money
       if (args.some((a) => /^(run-instances|start-instances|request-spot-|purchase-|allocate-|create-(?!invalidation))/.test(a))) return ask("создание ресурсов в AWS — это траты");
       return args[0] === "s3" && ["cp", "sync", "mv", "rm", "rb"].includes(args[1] ?? "") ? ask("запись в облачное хранилище") : args.some((a) => /^(delete|terminate|create-invalidation|put)/.test(a)) ? ask("изменение в AWS") : OK;
   }
   return OK;
 }
 
-// osascript: «do shell script "…"» запускает /bin/sh — это команда, её разбирают теми же правилами (иначе через неё
-// идут push в main, rm и чтение токена без кнопки). Команду, собранную в AppleScript из частей, не
-// разобрать — спросить; Терминал (закрыть вкладки, напечатать в них) и нажатия клавиш — тоже.
+// osascript: `do shell script "…"` runs /bin/sh, so it goes through the same rules, or a push to main, rm or reading
+// the token would pass without a button. A command assembled from parts can't be parsed, so ask; the same for
+// controlling Terminal (closing or typing into tabs) and keystrokes.
 function osascriptRules(t: string[], ctx: PolicyContext, depth: number): Verdict {
   const code = t
     .slice(1)
@@ -374,13 +373,13 @@ function osascriptRules(t: string[], ctx: PolicyContext, depth: number): Verdict
     else if (depth < 4) v = worst(v, classifyBashDepth(m[1].slice(1, -1).replace(/\\(["\\])/g, "$1"), ctx, depth + 1));
   }
   if (/doShellScript/.test(code)) v = worst(v, ask("osascript запускает команду оболочки — что именно, не видно"));
-  // прочитать список окон — можно; открыть, закрыть, ввести текст — потревожит сессии
+  // listing windows is fine; opening, closing or typing would disturb sessions
   if (/application\s+"(Terminal|iTerm2?)"/i.test(code) && /\b(do script|close|quit|set|delete|keystroke|key code|activate|launch|make new|reopen|run)\b/i.test(code)) v = worst(v, ask("управление Терминалом — может закрыть или потревожить сессии"));
   if (/"System Events"/i.test(code) && /\b(keystroke|key code|click)\b/i.test(code)) v = worst(v, ask("нажатия клавиш через System Events"));
   return v;
 }
 
-// Цели перенаправления и stdin (heredoc, herestring) размечает parseShell; здесь они отделяются от аргументов команды.
+// parseShell marks redirection targets and stdin (heredoc, here-string); here they are split from the arguments
 function split(t0: string[]) {
   const writes: string[] = [];
   const appends: string[] = [];
@@ -395,10 +394,10 @@ function split(t0: string[]) {
   return { t, writes, appends, stdin: stdin.join("\n") };
 }
 
-// Куда сессия без спроса не пишет: вход и запуск без спроса (ключи, оболочка, службы входа), настройки Claude Code
-// и других программ, секреты, системные папки и папка самого архитектора — запись в его состояние подменила бы
-// владельца. Остальное — обычная работа: владелец разрешил сессиям всё, кроме удаления, push в main, выкладки, трат
-// и писем людям.
+// Where a session doesn't write without asking: login and autostart (keys, shell profiles, launch agents), settings of
+// Claude Code and other programs, secrets, system folders, and the architect's own folder (writing its state would
+// impersonate the owner). Everything else is ordinary work: sessions may do anything except delete, push to main,
+// deploy, spend money or email people.
 const SENSITIVE_TARGET =
   /(^|\/)\.(ssh|gnupg|aws|config|docker|kube)(\/|$)|(^|\/)\.claude\/(settings[\w.-]*\.json$|CLAUDE\.md$|keybindings\.json$|hooks|plugins|agents|commands|skills|\.credentials)|(^|\/)\.claude\.json$|authorized_keys|id_(rsa|ed25519|ecdsa)|(^|\/)\.(zshrc|zprofile|zshenv|zlogin|zlogout|bashrc|bash_profile|profile|login|netrc|npmrc|pypirc|gitconfig)$|(^|\/)\.env(\.\w+)?$|\.(pem|key|p12)$|(^|\/)Library\/(LaunchAgents|LaunchDaemons|Keychains)(\/|$)|^\/(private\/)?(etc|Library|System|usr|bin|sbin)\//;
 function targetVerdict(w: string, ctx: PolicyContext, what: "перезапись" | "дописывание"): Verdict {
@@ -409,49 +408,49 @@ function targetVerdict(w: string, ctx: PolicyContext, what: "перезапис�
   return OK;
 }
 
-// Кому тело heredoc — только данные: текст для cat, grep, сообщение коммита и т. п.
+// Commands for which a heredoc body is plain data: text for cat or grep, a commit message
 const STDIN_DATA = new Set(["cat", "tee", "grep", "egrep", "fgrep", "rg", "sed", "awk", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "jq", "yq", "column", "base64", "pbcopy", "git", "gh"]);
 
 function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: number, piped = false): Verdict {
   const { t: t1, writes, appends, stdin } = split(t0);
   const t = stripPrefixes(t1);
   let v: Verdict = OK;
-  // переменные, через которые git запускает программу (GIT_SSH_COMMAND=… git fetch) — как git -c core.sshCommand
+  // environment variables through which git runs a program (GIT_SSH_COMMAND=… git fetch), as with git -c core.sshCommand
   if (t1.some((x) => /^GIT_(SSH_COMMAND|SSH|ASKPASS|EDITOR|SEQUENCE_EDITOR|PAGER|EXTERNAL_DIFF|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+)=/.test(x))) v = worst(v, ask("git запускает программу из переменной окружения"));
   for (const w of writes) v = worst(v, targetVerdict(w, ctx, "перезапись"));
-  // «> файл» без команды стирает его содержимое — то же удаление, только мимо rm
+  // "> file" with no command empties the file: a deletion that bypasses rm
   if (!t.length || t[0] === ":" || t[0] === "true") for (const w of writes) if (!SAFE_RM.test(w) && !/^\/dev\//.test(w)) v = worst(v, ask("удаление содержимого файла"));
   for (const w of appends) v = worst(v, targetVerdict(w, ctx, "дописывание"));
-  // тело heredoc: данным — ничего; коду интерпретатора (python3 - <<EOF) — проверка кода ниже; всем остальным
-  // (оболочка, sudo -s, ssh, неизвестная программа) — как команды, по-прежнему с запасом
+  // A heredoc body is plain data for data commands; for an interpreter (python3 - <<EOF) the code check below applies;
+  // for anything else (a shell, sudo -s, ssh, an unknown program) it is checked as commands, to be safe.
   const codeFromStdin = !!stdin && INTERPRETERS.has(basename(t[0] ?? "")) && !/^(bash|sh|zsh|dash|fish)$/.test(basename(t[0] ?? "")) && (t.includes("-") || !t.slice(1).some((x) => !x.startsWith("-")));
   if (stdin && depth < 4 && !codeFromStdin && !STDIN_DATA.has(basename(t[0] ?? ""))) v = worst(v, classifyBashDepth(stdin, ctx, depth + 1));
   if (!t.length) return v;
   const cmd = basename(t[0]);
   const raw = " " + t.join(" ");
 
-  // служебные секреты архитектора и ключи Claude: сама папка state закрыта целиком — и по полному пути, и относительно, и через cd
+  // the architect's secrets: the whole state folder is off limits, by absolute path, relative path or cd
   const stateDir = ctx.archHome + "/state";
   const touchesState = (x: string) => x.includes(stateDir) || x.includes("hook-secret") || /(^|\/)state\/(hook-secret|owner\.json|worker-settings\.json|updates\.json|workers\.json)/.test(x) || ((ctx.cwd === ctx.archHome || ctx.cwd.startsWith(ctx.archHome + "/")) && /^(\.\/)?state(\/|$)/.test(x)) || (cmd === "cd" && (x === "state" || x === ctx.archHome || x === "./state"));
   if (t.some(touchesState)) v = worst(v, deny("служебные секреты архитектора не читаются"));
   if (cmd === "security") {
     const sub = t[1] ?? "";
     if (/^(dump-keychain|export)$/.test(sub)) v = worst(v, deny("выгрузка связки ключей запрещена"));
-    // все записи архитектора, где есть имя его службы: токен, секрет хуков, ключ Mac для дежурного в облаке, ключ менеджера
+    // every Keychain item with the architect's service name: token, hook secret, relay key, manager key
     if (/^find-(generic|internet)-password$/.test(sub) && t.some((x) => x.includes(ctx.keychainService) || /^Claude Code/i.test(x)))
       v = worst(v, deny("токены архитектора и Claude из связки ключей не читаются"));
     else if (/^find-(generic|internet)-password$/.test(sub) && !t.includes("-s")) v = worst(v, ask("запрос в связку ключей без имени службы — может вернуть секрет архитектора"));
-    // имя службы, собранное подстановкой («$(printf archi-telegram)-architect», «$S»), прячет токен архитектора от
-    // проверки выше
+    // a service name built by substitution ("$(printf archi-telegram)-architect", "$S") would slip past the check above
     else if (/^find-(generic|internet)-password$/.test(sub) && t.slice(2).some((x) => /[$`]/.test(x))) v = worst(v, ask("имя записи связки ключей подставляется командой — может скрывать токен архитектора"));
     if (/^delete-/.test(sub)) v = worst(v, ask("удаление из связки ключей"));
   }
 
-  // хостинг напрямую
+  // direct hosting access
   if (/^(lftp|ftp|sftp|ncftp|curlftpfs|lftp-get)$/.test(cmd)) v = worst(v, deny("прямой доступ к хостингу запрещён — выкладка только конвейерами репозиториев"));
   if (/^(scp|rsync|ssh|sshpass|sftp)$/.test(cmd)) {
-    // по имени хостинга — запрет; любая другая удалённая цель (IP, алиас из ~/.ssh/config) — тоже: легитимной выкладки по ssh нет, а имя хоста из строки не узнать
-    // ssh: первый не-ключ — хост (у sshpass — после его ключей и слова ssh); остальное — команда на том хосте
+    // Refused for the hosting pattern and for any other remote target (an IP, a ~/.ssh/config alias): there is no
+    // legitimate deploy over ssh, and the real host can't be told from the string. For ssh the first non-option is the
+    // host (for sshpass, after its options and "ssh"); the rest is the remote command.
     const sshHost = (() => {
       let a = t.slice(1);
       if (cmd === "sshpass") a = a.slice(a.indexOf("ssh") + 1);
@@ -463,31 +462,32 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
     if (hosting.test(raw)) v = worst(v, deny("прямой доступ к хостингу запрещён — выкладка только конвейерами репозиториев"));
     else if (remote) v = worst(v, deny("ssh/scp/rsync на удалённые машины запрещены: выкладка только конвейерами репозиториев"));
     else if (cmd === "ssh" && sshHost && depth < 4) {
-      // «ssh localhost "git push origin main"» — та же команда на этом же Mac
+      // ssh localhost "git push origin main" runs on this same Mac
       const rest = t.slice(t.indexOf(sshHost) + 1).join(" ");
       if (rest) v = worst(v, classifyBashDepth(rest, ctx, depth + 1));
     }
   }
   if (cmd === "curl" || cmd === "wget" || cmd === "http" || cmd === "xh") v = worst(v, curlRules(t, raw, hosting));
 
-  // обёртки: bash -c "…", eval, xargs, find -exec
+  // wrappers: bash -c "…", eval, xargs, find -exec
   if (INTERPRETERS.has(cmd)) {
     const shell = /^(bash|sh|zsh|dash|fish)$/.test(cmd);
     const ci = t.findIndex((x, k) => k > 0 && (x === "-c" || x === "-lc" || x === "-ic"));
     if (shell && ci > 0 && t[ci + 1] && depth < 4) v = worst(v, classifyBashDepth(t[ci + 1], ctx, depth + 1));
-    // код другого языка (-c/-e или из stdin: python3 - <<EOF) не разобрать: если в нём удаление, запись, запуск команд или сеть — спросить
+    // inline code in another language (-c/-e, or stdin as in python3 - <<EOF) can't be parsed: ask about deletes and
+    // the owner's business in it
     const codeIdx = t.findIndex((x, k) => k > 0 && /^(-c|-e|--eval|-p|-r)$/.test(x));
     const code = shell ? "" : [codeIdx > 0 ? t.slice(codeIdx + 1).join(" ") : "", codeFromStdin ? stdin : ""].join("\n").trim();
     if (code && CODE_DELETES.test(code)) v = worst(v, ask("удаление файлов из кода"));
     if (code && CODE_OWNER_DEEDS.test(code)) v = worst(v, ask("код запускает удаление, push или выкладку"));
     if (code && CODE_MAILS.test(code)) v = worst(v, ask("код пишет людям"));
-    // `… | sh`, `curl … | bash`: что исполнится, не видно
+    // `… | sh`, `curl … | bash`: what runs is not visible
     if (shell && piped && !t.slice(1).some((x) => !x.startsWith("-"))) v = worst(v, ask("исполнение потока в оболочке — что именно, не видно"));
     const script = t.slice(1).find((x) => !x.startsWith("-"));
     if (script && DEPLOY_SCRIPT.test(script)) v = worst(v, ask("скрипт выкладки"));
   }
   if (cmd === "eval" && depth < 4) v = worst(v, classifyBashDepth(t.slice(1).join(" "), ctx, depth + 1));
-  // watch и script запускают свою команду («watch "git push origin main"»)
+  // watch and script run a command of their own (watch "git push origin main")
   if (cmd === "watch" && depth < 4) {
     let i = 1;
     while (i < t.length && t[i].startsWith("-")) i += /^-(n|d|-interval|-differences)$/.test(t[i]) ? 2 : 1;
@@ -520,7 +520,7 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
     const targets = t.slice(1).filter((x) => !x.startsWith("-"));
     if (!targets.length || !targets.every((x) => SAFE_RM.test(x) && !x.split("/").includes(".."))) v = worst(v, ask("удаление файлов"));
   }
-  // уничтожение другими путями: mv в /dev/null или поверх существующего, усечение, перезапись, chmod/chown на всё
+  // destruction by other means: mv to /dev/null or over a file, truncate, overwrite, recursive chmod/chown
   if (cmd === "mv") {
     const targets = t.slice(1).filter((x) => !x.startsWith("-"));
     const dest = targets[targets.length - 1] ?? "";
@@ -528,13 +528,13 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
     else if (targets.slice(0, -1).some((x) => !SAFE_RM.test(x)) && !/\/$/.test(dest) && !SAFE_RM.test(dest)) v = worst(v, ask("перемещение файла с возможной перезаписью"));
   }
   if (cmd === "truncate" || (cmd === "dd" && t.some((x) => /^of=/.test(x) && !SAFE_RM.test(x.slice(3)) && !/^of=\/dev\/null$/.test(x)))) v = worst(v, ask("перезапись файла"));
-  if (cmd === "tee") for (const f of t.slice(1).filter((x) => !x.startsWith("-"))) v = worst(v, t.some((x) => x === "-a" || x === "--append") ? targetVerdict(f, ctx, "дописывание") : targetVerdict(f, ctx, "перезапись")); // tee пишет как «>», с -a — как «>>»
+  if (cmd === "tee") for (const f of t.slice(1).filter((x) => !x.startsWith("-"))) v = worst(v, t.some((x) => x === "-a" || x === "--append") ? targetVerdict(f, ctx, "дописывание") : targetVerdict(f, ctx, "перезапись")); // tee writes like ">", with -a like ">>"
   if (/^(chmod|chown|chflags)$/.test(cmd) && t.some((x) => /^-[a-zA-Z]*R/.test(x))) v = worst(v, ask("рекурсивная смена прав"));
-  // вынос данных обычным запросом: подстановка команд или данные в адресе наружу
+  // exfiltration through an ordinary request: command substitution or data in an outbound URL
   if (/^(curl|wget|http|xh)$/.test(cmd)) {
     const outbound = t.some((x) => /^(https?:\/\/)?(?!localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)[\w.-]+\.[a-z]{2,}([:/?]|$)/i.test(x) || /^https?:\/\/\d+\.\d+\.\d+\.\d+/.test(x));
-    // данные с Mac наружу: подстановка команды где угодно, переменная — в параметрах адреса или в теле запроса.
-    // Переменная в пути адреса — обычное скачивание (…/$REF/$path)
+    // Data leaving the Mac: command substitution anywhere, or a variable in the query or the request body.
+    // A variable in the URL path is an ordinary download (…/$REF/$path).
     const leaks = t.some((x, i) => /\$\(|`/.test(x) || (/\$\{?[A-Za-z_]/.test(x) && (/[?=#&][^\s]*\$\{?[A-Za-z_]/.test(x) || /^(-d|--data(-[\w-]+)?|-F|--form|-T|--upload-file|--json)$/.test(t[i - 1] ?? ""))));
     if (outbound && leaks) v = worst(v, ask("запрос наружу с подстановкой данных"));
   }
@@ -548,16 +548,16 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
   if (cmd === "make" && t.slice(1).some((x) => DEPLOY_WORD.test(x))) v = worst(v, ask("выкладка"));
   v = worst(v, deployCli(cmd, t));
 
-  // письма и сообщения людям
+  // email and messages to people
   if (["sendmail", "mail", "mailx", "msmtp", "mutt"].includes(cmd)) v = worst(v, ask("письмо людям"));
   if (cmd === "osascript" && /\b(Mail|Messages|Outlook|Telegram|WhatsApp)\b/.test(raw)) v = worst(v, ask("сообщение людям через приложение Mac"));
   if (cmd === "osascript") v = worst(v, osascriptRules(t, ctx, depth));
 
-  // траты
+  // spending
   if (/rapidata.*\b(launch|order|create)\b/i.test(raw)) v = worst(v, ask("трата денег (Rapidata)"));
   if (ctx.spendPattern && new RegExp(ctx.spendPattern, "i").test(raw)) v = worst(v, ask("трата денег"));
 
-  // чужие сессии и процессы, сервис архитектора, машина
+  // other sessions and processes, the architect's service, the machine
   if (cmd === "claude" && ["stop", "kill", "rm", "respawn", "purge"].includes(t[1] ?? "")) v = worst(v, ask(`claude ${t[1]} — вмешательство в сессии`));
   if (cmd === "claude" && t[1] === "daemon" && t[2] === "stop") v = worst(v, ask("остановка всех фоновых сессий"));
   if (cmd === "pkill" || cmd === "killall") v = worst(v, ask("массовая остановка процессов"));
@@ -574,8 +574,8 @@ function classifyBashDepth(command: string, ctx: PolicyContext, depth: number): 
   const hosting = new RegExp(ctx.hostingPattern, "i");
   const { commands, nested, piped } = parseShell(command);
   let v: Verdict = OK;
-  // Переменные, заданные этой же строкой: S="/private/tmp/…" && rm "$S"/*.png. Без подстановки удаление своих черновиков
-  // во временной папке уходило владельцу кнопкой и стопорило сессию. Значение с подстановкой не берём.
+  // Variables set in the same line (S="/private/tmp/…" && rm "$S"/*.png) are substituted, so cleaning up drafts in a
+  // temp folder needs no button. Values that contain substitutions are not used.
   const vars = new Map<string, string>();
   commands.forEach((c, i) => {
     const sets = c[0] === "export" ? c.slice(1) : c;
@@ -583,8 +583,7 @@ function classifyBashDepth(command: string, ctx: PolicyContext, depth: number): 
       for (const w of sets) {
         const k = w.slice(0, w.indexOf("="));
         const val = w.slice(w.indexOf("=") + 1);
-        // $(mktemp -d) без своего шаблона пути — всегда новая папка во временной: запись туда не спрашиваем
-        // (иначе на T=$(mktemp -d)/runs.tsv приходит «перезапись файла»)
+        // $(mktemp -d) without a path template is always a fresh temp folder: writing there needs no question
         const tmp = val.replace(/^\$\(mktemp(?:\s+-d)?(?:\s+-t\s+[\w.-]+)?\)/, "/private/tmp/mktemp");
         if (/[$`]/.test(tmp)) vars.delete(k);
         else vars.set(k, tmp);
@@ -600,15 +599,15 @@ export function classifyBash(command: string, ctx: PolicyContext): Verdict {
   return classifyBashDepth(command, ctx, 0);
 }
 
-// Вердикт одной команды из parseShell — бриф решения так находит в цепочке ту, из-за которой спрашиваем.
+// The verdict of one command from parseShell; the decision brief uses it to find the command in a chain that asks
 export function classifyCommand(t: string[], ctx: PolicyContext): Verdict {
   return commandRules(t, ctx, new RegExp(ctx.hostingPattern, "i"), 0);
 }
 
-// К какому из пяти дел владельца относится вопрос шлагбаума. Остальные вопросы — защита самой машины и бота
-// (ключи, оболочка, связка ключей, Терминал): их владелец не отключает.
+// Which of the owner's five points a gate question belongs to. Other questions protect the Mac and the bot itself
+// (keys, shell, keychain, Terminal), and the owner cannot turn them off.
 export function askKind(reason: string): "delete" | "main" | "deploy" | "spend" | "people" | undefined {
-  // маскировка push под алиасом, ключи бота в связке и перезапись истории на GitHub — спрашиваем при любых настройках
+  // a push hidden behind an alias, the bot's keychain entries and history rewrites on GitHub are asked about whatever the setting
   if (/алиас|связк|push с перезаписью/.test(reason)) return undefined;
   if (/трат|создание ресурсов в AWS/.test(reason)) return "spend";
   if (/письм|сообщение людям|пишет людям/.test(reason)) return "people";
@@ -621,7 +620,7 @@ export function askKind(reason: string): "delete" | "main" | "deploy" | "spend" 
 export function classifyTool(tool: string, input: Record<string, unknown>, ctx: PolicyContext): Verdict {
   const v = classifyToolAll(tool, input, ctx);
   const kind = v.decision === "ask" ? askKind(v.reason) : undefined;
-  // владелец снял вопросы о части своих дел (config.ask): их сессии делают без кнопки
+  // points the owner turned off in config.ask run without a button
   return kind && ctx.ask && !ctx.ask.includes(kind) ? OK : v;
 }
 
@@ -636,7 +635,7 @@ function classifyToolAll(tool: string, input: Record<string, unknown>, ctx: Poli
   return OK;
 }
 
-// Синхронно читает текущую ветку git (для «push без цели» и «reset --hard»).
+// The current git branch, read synchronously (for a bare "push" and "reset --hard")
 export function gitBranchSync(cwd: string): string {
   try {
     const p = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { stdout: "pipe", stderr: "ignore" });

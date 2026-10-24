@@ -1,6 +1,6 @@
-// Хук PreToolUse рабочих сессий. Запускается Claude Code на каждый вызов инструмента.
-// Шлагбаум считается здесь же, без хоста: если хост выключен, необратимое всё равно спросит разрешения.
-// Через хост приходят ответы владельца: на вопросы AskUserQuestion и сообщения для занятой сессии.
+// Hook of the sessions the architect starts. On PreToolUse the policy gate runs right here, without the host,
+// so irreversible steps still ask while the host is off. From the host come the owner's answers to
+// AskUserQuestion and messages for a busy session.
 import { ARCH_HOME, config } from "./config";
 import { readHookSecret } from "./secret";
 import { classifyTool, gitBranchSync } from "./policy";
@@ -30,7 +30,7 @@ async function askHost(input: HookInput, waitMs: number): Promise<HostReply> {
 
 const input = (await Bun.stdin.json()) as HookInput;
 
-// Не PreToolUse — передать хосту как есть (разрешения, итоги ходов, сбои, уведомления); хост молчит — Claude Code продолжает штатно
+// Other events (permissions, turn ends, failures, notifications) go to the host as they are; no answer, no effect
 if (input.hook_event_name !== "PreToolUse") {
   const route = ({ PermissionRequest: "permission", Stop: "stop", StopFailure: "stopfail", Notification: "notify" } as Record<string, string>)[input.hook_event_name];
   if (!route) print(null);
@@ -50,7 +50,7 @@ if (input.hook_event_name !== "PreToolUse") {
 }
 
 const isQuestion = input.tool_name === "AskUserQuestion";
-setTimeout(() => print(null), isQuestion ? 6 * 3600_000 : 20_000); // страховка от зависания
+setTimeout(() => print(null), isQuestion ? 6 * 3600_000 : 20_000); // never hang the session
 
 const verdict = classifyTool(input.tool_name, input.tool_input ?? {}, {
   cwd: input.cwd,

@@ -1,7 +1,7 @@
-// Общий хук для всех сессий Claude Code на этом Mac (ставится в ~/.claude/settings.json командой `archi on`, снимается `archi off`).
-// Пока владелец за Mac — хост сразу отвечает «решай в терминале», и сессия ведёт себя как обычно.
-// Когда он отошёл — разрешения, вопросы с вариантами и вопросы в конце хода уходят ему в Telegram, его ответ возвращается в сессию.
-// Хост выключен, не отвечает или упал — хук молча выходит, и Claude Code продолжает штатно.
+// Shared hook for every Claude Code session on this Mac: `archi on` adds it to ~/.claude/settings.json, a plugin install
+// registers it in hooks/hooks.json. While the owner is at the Mac the host answers at once and nothing changes. When they
+// are away, permission requests, multiple-choice questions and end-of-turn questions go to Telegram and the answer comes
+// back. If the host is off or fails, the hook exits silently.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { STATE, config, isTestCwd } from "./config";
@@ -16,9 +16,9 @@ try {
   const input = (await Bun.stdin.json()) as { hook_event_name?: string; session_id?: string; tool_name?: string; cwd?: string };
   const route = input.hook_event_name === "PermissionRequest" ? "permission" : input.hook_event_name === "Stop" ? "stop" : input.hook_event_name === "PreToolUse" && input.tool_name === "AskUserQuestion" ? "question" : "";
   if (!route || !input.session_id || !existsSync(join(STATE, "host.pid"))) done();
-  // сессии проверок настоящему хосту не пишут (у их собственного тестового хука задан ARCH_STATE_DIR)
+  // test sessions never reach the real host; their own test hook sets ARCH_STATE_DIR
   if (!process.env.ARCH_STATE_DIR && isTestCwd(String(input.cwd ?? ""))) done();
-  // у сессий, запущенных архитектором, свои хуки (со шлагбаумом) — общий им не нужен
+  // sessions the architect started have their own hooks, with the policy gate
   let workers: Record<string, unknown> = {};
   try {
     workers = JSON.parse(readFileSync(join(STATE, "workers.json"), "utf8"));

@@ -1,7 +1,7 @@
-// Telegram: один бот, один владелец. Всё от других аккаунтов и из групп отбрасывается до любой работы;
-// если этот бот подключает чужие Mac (config.connect), чужое уходит только в изолированный путь подключения (src/guest.ts).
-// Вывод — rich-сообщения Bot API 10.1+ (Markdown Claude рисует сам Telegram: таблицы, заголовки, сворачиваемые блоки).
-// Ход ответа — потоковый черновик (sendRichMessageDraft) с блоком «Думаю…» и кнопкой «Стоп».
+// Telegram: one bot, one owner. Anything from other accounts or groups is dropped before any work; when this bot
+// connects other Macs (config.connect), strangers reach only the isolated connection path (src/guest.ts). Output uses
+// Bot API 10.1+ rich messages, where Telegram renders Claude's Markdown (tables, headings, collapsible blocks). A turn
+// streams as a draft (sendRichMessageDraft) with a "Thinking…" line and a Stop button.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -16,8 +16,8 @@ import { transcribe } from "./voice";
 
 const LINK_FILE = join(STATE, "link.json");
 const NIGHT_FILE = join(STATE, "night-held.json");
-// Нет связи вообще (ни Telegram, ни Claude не отвечают по HTTPS), а не только опрос Telegram: тогда перезапуск хоста бесполезен.
-// Проверка настоящим запросом: при упавшем VPN адреса могут узнаваться, а сами сервисы — не открываться.
+// No connection at all (neither Telegram nor Claude answers over HTTPS), not just failed polling: a host restart won't
+// help then. A real request, since with a dead VPN names may still resolve while the services don't open.
 async function netDown(): Promise<boolean> {
   const ok = (url: string) => fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5000) }).then(() => true, () => false);
   const [a, b] = await Promise.all([ok("https://api.telegram.org"), ok("https://api.anthropic.com")]);
@@ -25,24 +25,24 @@ async function netDown(): Promise<boolean> {
 }
 
 const OWNER_FILE = join(STATE, "owner.json");
-const RECEIPTS = join(STATE, "updates.json"); // принятые update_id (24 ч): Telegram может отдать пачку ещё раз после сбоя — Hermes update_admission
+const RECEIPTS = join(STATE, "updates.json"); // update_ids seen in the last 24 h: Telegram may resend a batch after a failure
 const PAIR_FILE = join(STATE, "pair.json");
-const BOT_FILE = join(STATE, "bot.json"); // имя бота — для подсказок archi в Терминале
-const API_ROOT = process.env.ARCH_TG_API ?? "https://api.telegram.org"; // в проверках — подставной Telegram на 127.0.0.1
-const RICH_LIMIT = 30_000; // у rich-сообщения 32 768 знаков
+const BOT_FILE = join(STATE, "bot.json"); // the bot's username, for archi's hints in Terminal
+const API_ROOT = process.env.ARCH_TG_API ?? "https://api.telegram.org"; // tests use a mock Telegram on 127.0.0.1
+const RICH_LIMIT = 30_000; // a rich message holds 32,768 characters
 
-export type Button = { text: string; data?: string; url?: string; style?: "success" | "danger" | "primary"; disabled?: boolean }; // disabled — погасшая кнопка-подпись (Bot API 10.3)
+export type Button = { text: string; data?: string; url?: string; style?: "success" | "danger" | "primary"; disabled?: boolean }; // disabled: an inert caption button (Bot API 10.3)
 export type Incoming = {
   messageId: number;
   threadId?: number;
   text: string;
-  voice?: string; // расшифровка голосового — уже входит в text
+  voice?: string; // the voice transcript, already part of text
   forwardedFrom?: string;
   replyToId?: number;
   replyToText?: string;
   quote?: string;
   files: { path: string; kind: string; mime?: string; name?: string }[];
-  relayed?: boolean; // пришло из очереди дежурного в облаке, пока Mac спал (src/relay.ts)
+  relayed?: boolean; // queued by the cloud relay while the Mac slept (src/relay.ts)
 };
 type CallbackHandler = (args: { id: string; value: string; messageId: number; answer: (text?: string) => Promise<void> }) => Promise<void> | void;
 
@@ -50,14 +50,14 @@ export function ownerId(): number | undefined {
   return readJson<{ id?: number }>(OWNER_FILE, {}).id;
 }
 
-// Код сопряжения создаётся только в терминале Mac (bin/arch pair); в чате доступ не меняется.
+// Pairing codes are created only in a terminal on the Mac (bin/arch pair); the chat can't change who has access
 export function createPairCode(minutes = 30): string {
   const code = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
   writeJson(PAIR_FILE, { hash: sha(code), expires: Date.now() + minutes * 60_000, attempts: 0 });
   return code;
 }
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
-// код привязки в личном чате, пока окно archi pair открыто: «123456» или «/start 123456»
+// A pairing code in a private chat while an archi pair code is open: "123456" or "/start 123456"
 const pairCodeMessage = (ctx: Context) => existsSync(PAIR_FILE) && ctx.chat?.type === "private" && /^(\/(start|pair)(@\w+)?\s*)?\d{6}$/.test((ctx.message?.text ?? "").replace(/\s+/g, " ").trim());
 
 function keyboard(rows: Button[][] | null | undefined): { inline_keyboard: InlineKeyboardButton[][] } | undefined {
@@ -73,13 +73,13 @@ export class Telegram {
   bot: Bot;
   username = "";
   topicsOn: boolean | undefined;
-  canManageBots = false; // в @BotFather включён Bot Management Mode — можно создавать личных ботов людям
+  canManageBots = false; // Bot Management Mode is on in @BotFather: this bot can create personal bots
   private guest?: (ctx: Context) => Promise<unknown>;
   private handlers = new Map<string, CallbackHandler>();
   private onMessage: (m: Incoming) => void = () => {};
   private onStopGeneration: (draftId: number) => void = () => {};
   private albums = new Map<string, { msgs: Message[]; timer: Timer }>();
-  private kinds = new Map<number, "rich" | "text">(); // как отправлено сообщение — от этого зависит правка
+  private kinds = new Map<number, "rich" | "text">(); // how a message was sent decides how it is edited
   private draftMode: "rich" | "blocks" | "plain" = "rich";
   private seenTimer?: Timer;
   private saveSeen() {
@@ -93,9 +93,9 @@ export class Telegram {
       writeJson(RECEIPTS, this.seen);
     }, 2000);
   }
-  private chain: Promise<void> = Promise.resolve(); // сообщения — по порядку; нажатия и «Стоп» их не ждут
+  private chain: Promise<void> = Promise.resolve(); // messages in order; taps and Stop don't wait for them
   private seen = readJson<Record<string, number>>(RECEIPTS, {});
-  relayed = new WeakSet<object>(); // сообщения из очереди облака (src/relay.ts)
+  relayed = new WeakSet<object>(); // messages from the cloud relay's queue (src/relay.ts)
 
   constructor(
     private token: string,
@@ -104,11 +104,11 @@ export class Telegram {
     this.bot = new Bot(token, { client: { apiRoot: API_ROOT } });
     this.bot.catch((e) => log("tg", "ошибка обработчика", String(e.error ?? e)));
     this.bot.use(async (ctx, next) => {
-      // чужое — отбрасываем до всякой работы (ни памяти, ни диска на поток чужих сообщений)
+      // drop strangers before any work: no memory or disk spent on a flood of messages
       const from = ctx.from?.id ?? (ctx.update as { stopped_message_generation?: { chat: { id: number } } }).stopped_message_generation?.chat.id;
       const owner = this.owner;
-      // чужие и создание личных ботов — только путь подключения, без ожидания: опрос владельца он не задерживает.
-      // Кроме кода привязки заново из личного чата, пока archi pair на Mac держит окно открытым
+      // Strangers and managed-bot updates go only to the connection path, not awaited, so the owner's polling never
+      // waits. The exception is a pairing code in a private chat while an archi pair code is open.
       if ((owner && from !== owner && !pairCodeMessage(ctx)) || ctx.update.managed_bot) {
         if (this.guest) void this.guest(ctx).catch((e) => log("guest", "ошибка пути подключения", String(e)));
         return;
@@ -125,7 +125,7 @@ export class Telegram {
       if (s.chat.id === this.owner) this.onStopGeneration(s.draft_id);
     });
     this.bot.on("callback_query:data", (ctx) => this.handleCallback(ctx));
-    // голосовое распознаётся секунды — по очереди, но мимо опроса: «Разрешить» и «Стоп» не ждут (linuz90, OpenClaw)
+    // transcribing a voice message takes seconds: messages queue apart from polling, so "Allow" and Stop don't wait
     this.bot.on("message", (ctx) => {
       this.chain = this.chain.then(() => this.handleMessage(ctx)).catch((e) => log("tg", "ошибка разбора сообщения", String(e)));
     });
@@ -139,7 +139,7 @@ export class Telegram {
     this.onMessage = fn;
   }
 
-  // Обработчик чужих: получает сырое обновление и отвечает сам; к обработчикам владельца оно не попадает никогда.
+  // The handler for strangers gets the raw update and answers by itself; it never reaches the owner's handlers
   onGuest(fn: (ctx: Context) => Promise<unknown>) {
     this.guest = fn;
   }
@@ -153,13 +153,13 @@ export class Telegram {
   }
 
   private lastPoll = Date.now();
-  // Связь с Telegram переживает перезапуски хоста: когда был последний удачный опрос, пропадала ли связь, спал ли Mac.
-  // Иначе после долгого перерыва с перезапусками хост, вернувшись, ничего не скажет.
+  // The link state (last good poll, whether the link dropped, whether the Mac slept) survives host restarts, or after a
+  // long outage with restarts the host would say nothing on return
   private link = readJson<{ okAt: number; down?: { since: number; why: "dns" | "telegram" }; slept?: boolean }>(LINK_FILE, { okAt: Date.now() });
   onReconnect?: (from: number, to: number, why: "dns" | "telegram" | "sleep") => Promise<void>;
 
-  // О перерыве говорим, только если владелец в это время писал и ждал ответа (его сообщения пришли пачкой),
-  // и называем причину верно: сон Mac — это сон, а не «нет интернета».
+  // Report an outage only if the owner wrote meanwhile (their messages arrive in a batch), with the right cause:
+  // a sleeping Mac is not "no internet"
   private async linkOk(updates: unknown) {
     const now = Date.now();
     const { okAt, down, slept } = this.link;
@@ -179,8 +179,8 @@ export class Telegram {
   }
 
   async start() {
-    // отмечаем каждый ответ getUpdates; сторож ниже ловит «бот жив, но глух». Первый удачный опрос после перерыва
-    // сначала говорит владельцу, что было, — и только потом бот отвечает на скопившиеся сообщения.
+    // Every getUpdates answer is recorded, and the watchdog below catches "alive but deaf". The first good poll after
+    // an outage tells the owner what happened before the queued messages are answered.
     this.bot.api.config.use(async (prev, method, payload, signal) => {
       try {
         const r = await prev(method, payload, signal);
@@ -200,16 +200,16 @@ export class Telegram {
       const gap = now - lastCheck;
       lastCheck = now;
       if (gap > 60_000) {
-        this.link = { ...this.link, slept: true }; // перерыв из-за сна — не обрыв связи
+        this.link = { ...this.link, slept: true }; // a gap from sleep is not a lost connection
         writeJson(LINK_FILE, this.link);
-        this.lastPoll = now; // Mac спал: сначала дать опросу подняться
+        this.lastPoll = now; // give polling a chance to recover after sleep
         return;
       }
       if (now - this.lastPoll > 150_000)
         void netDown().then((down) => {
-          if (down) return; // интернета нет — перезапуск не поможет, ждём его
+          if (down) return; // no internet: a restart won't help
           log("tg", "опрос Telegram молчит больше 2,5 минут — перезапускаюсь");
-          process.exit(3); // launchd поднимет заново
+          process.exit(3); // launchd restarts the host
         });
     }, 30_000).unref();
     await this.refreshMe();
@@ -224,7 +224,7 @@ export class Telegram {
     this.poll();
   }
 
-  // Опрос Telegram. Пока Mac спит, бот у дежурного в облаке; проснувшись, хост запускает опрос заново (src/relay.ts).
+  // Telegram polling. While the Mac sleeps the cloud relay has the bot; on wake the host polls again (src/relay.ts)
   poll() {
     let halted = false;
     this.halt = () => (halted = true);
@@ -235,27 +235,27 @@ export class Telegram {
         onStart: (me) => log("tg", `бот @${me.username} слушает`),
       })
       .catch((e) => {
-        if (halted) return; // остановили сами (бот уходит дежурному или хост выключается) — это не сбой
+        if (halted) return; // stopped on purpose: handing over to the relay or shutting down
         if (e instanceof GrammyError && e.error_code === 401) {
-          // ключ бота отозван (бот перенесён на другой Mac или удалён): перезапуск не поможет — останавливаемся насовсем
+          // the token was revoked (the bot moved to another Mac or was deleted): a restart won't help, stop for good
           log("tg", "Telegram не принимает ключ бота — бот перенесён на другой Mac или удалён. Хост остановлен");
           process.exit(0);
         }
         log("tg", "опрос Telegram остановился", String(e));
-        process.exit(3); // launchd перезапустит
+        process.exit(3); // launchd restarts the host
       });
   }
   private polling?: Promise<void>;
   private halt?: () => void;
 
-  // Цикл опроса дорабатывает текущую пачку: ждём его (недолго), чтобы новый опрос не пошёл вторым рядом.
+  // The polling loop finishes its current batch; wait for it briefly so a new loop doesn't run alongside
   async stop() {
     this.halt?.();
     await this.bot.stop().catch(() => {});
     await Promise.race([this.polling, sleep(3000)]);
   }
 
-  // Темы в личном чате включаются в @BotFather (Threaded Mode); проверяем, включены ли сейчас.
+  // Topics in the private chat are turned on in @BotFather (Threaded Mode); check whether they are on now
   async refreshMe() {
     try {
       const me = (await this.bot.api.getMe()) as { username: string; has_topics_enabled?: boolean; can_manage_bots?: boolean };
@@ -280,8 +280,7 @@ export class Telegram {
       log("tg", "нажатие кнопки с чужого аккаунта отброшено", { from: q.from.id });
       return;
     }
-    // нажал кнопку — значит, не спит: ночью ответы на нажатие не откладываются до утра (раньше «не спит» считалось только
-    // по сообщениям, и после «Ответить» ночью подсказка ждала 8:00)
+    // a tap means the owner is awake, so at night the replies to it aren't held until morning
     this.lastOwnerAt = Date.now();
     const [kind, id, ...rest] = (q.data ?? "").split(":");
     const h = this.handlers.get(kind);
@@ -299,11 +298,11 @@ export class Telegram {
 
   private async handleMessage(ctx: Context) {
     const msg = ctx.message!;
-    if (msg.from?.id === ctx.me.id || msg.pinned_message || msg.managed_bot_created) return; // служебные: бот закрепил «Пульт», создан личный бот и т. п.
+    if (msg.from?.id === ctx.me.id || msg.pinned_message || msg.managed_bot_created) return; // service messages: a pinned dashboard, a created bot
     if (!this.owner) return this.tryPair(ctx);
     if (!this.isOwner(ctx)) {
-      // привязать заново (новый аккаунт, новый телефон): код даёт только archi pair в Терминале этого Mac — с другого
-      // аккаунта принимается лишь верный код, пока он открыт; прочее — тишина, как всем чужим
+      // Re-pairing (a new account or phone): only archi pair on this Mac makes a code, and from another account only a
+      // correct open code is accepted; anything else gets the silence any stranger gets.
       if (pairCodeMessage(ctx)) return this.tryPair(ctx, true);
       log("tg", "сообщение с чужого аккаунта отброшено", { from: ctx.from?.id, chat: ctx.chat?.type });
       return;
@@ -325,7 +324,7 @@ export class Telegram {
     this.onMessage(await this.normalize([msg]));
   }
 
-  // again — уже есть владелец: привязка переходит к новому аккаунту, прежний узнаёт об этом (подмену не провернуть тихо)
+  // again: there is an owner already; pairing moves to the new account and the previous one is told, so a takeover can't be silent
   private async tryPair(ctx: Context, again = false) {
     const text = ctx.message?.text ?? "";
     log("tg", "сообщение до привязки владельца", { from: ctx.from?.id, chat: ctx.chat?.type, text: text.replace(/\d/g, "#").slice(0, 40) });
@@ -334,7 +333,7 @@ export class Telegram {
     const code = text.replace(/^\/(start|pair)(@\w+)?\s*/, "").replace(/\s+/g, "").trim();
     if (!/^\d{6}$/.test(code)) {
       if (again) return;
-      // окно привязки открыто, а кода нет — подсказать, а не молчать
+      // pairing is open but there is no code: give a hint rather than silence
       await ctx.reply(tr("Пришлите сюда шесть цифр кода привязки — его показывает команда archi pair на Mac.", "Send the six-digit pairing code here — archi pair shows it on the Mac.")).catch(() => {});
       return;
     }
@@ -378,11 +377,11 @@ export class Telegram {
         if (said) {
           voice = said;
           texts.push(said);
-          // что услышал — в кавычках, с заглавной, сразу под голосовым (без цитаты: оно и так строкой выше)
+          // echo the transcript in quotes right under the voice message
           const heard = said.replace(/[_*`]/g, " ").trim();
           const line = `${heard.charAt(0).toUpperCase()}${heard.slice(1)}`;
           await this.send(tr(`«${line}»`, `“${line}”`), { silent: true, threadId: m.is_topic_message ? m.message_thread_id : undefined });
-          continue; // распознанное голосовое — это текст, сам файл архитектору не нужен
+          continue; // the transcript is the message; the architect doesn't need the file
         }
       }
       files.push(f);
@@ -390,7 +389,7 @@ export class Telegram {
     const r = first.reply_to_message;
     this.lastId = Math.max(this.lastId, ...msgs.map((x) => x.message_id));
     this.lastOwnerAt = Date.now();
-    // пересланное — чужие слова, не его согласие: в «его слово» не идёт
+    // forwarded text is someone else's words, never the owner's consent
     if (!msgs.some((x) => x.forward_origin)) this.ownerSaid = [...this.ownerSaid.filter((x) => Date.now() - x.at < 30 * 60_000), { at: Date.now(), text: texts.join("\n\n") }].slice(-10);
     return {
       messageId: first.message_id,
@@ -418,7 +417,7 @@ export class Telegram {
     const file = await this.bot.api.getFile(pick.id);
     if (!file.file_path) return null;
     const res = await fetch(`${API_ROOT}/file/bot${this.token}/${file.file_path}`);
-    if (!res.ok) throw new Error(`скачивание: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
     const day = new Date().toISOString().slice(0, 10);
     const dir = join(INBOX, day);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -427,11 +426,11 @@ export class Telegram {
     return { path, kind: pick.kind, mime: pick.mime, name: pick.name };
   }
 
-  // ── отправка ───────────────────────────────────────────────────────────────
+  // ── sending ────────────────────────────────────────────────────────────────
 
-  // ── темп чата, 429 и повторы без дублей (уроки Hermes #91969, OpenClaw network-errors, ccbot PR #93) ──
-  private lastOut = 0; // последний вызов в чат владельца: один слот в секунду на отправки
-  private floodUntil = 0; // Telegram наказал за частоту — до этого времени промежуточное (черновики, правки) не шлём
+  // Pacing, 429 handling and retries without duplicates
+  private lastOut = 0; // the last call to the owner's chat: one send slot per second
+  private floodUntil = 0; // rate-limited by Telegram: no drafts or interim edits until then
   private deferred: (() => Promise<unknown>)[] = [];
   private flushTimer?: Timer;
 
@@ -439,7 +438,8 @@ export class Telegram {
     return Date.now() < this.floodUntil;
   }
 
-  // kind: "send" — сообщение владельцу (ждёт слот; по сети повторяется, только если запрос точно не ушёл); "edit" — правка/служебное.
+  // kind "send": a message to the owner (waits for its slot; a network error is retried only if the request surely
+  // didn't leave); "edit": edits and service calls
   private async call<T>(fn: () => Promise<T>, kind: "send" | "edit" = "edit"): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       if (kind === "send") {
@@ -457,7 +457,7 @@ export class Telegram {
             await sleep((ra + 0.5) * 1000);
             continue;
           }
-          throw e; // длинный штраф: не засыпать — отправку отложит send(), правку пропустят
+          throw e; // a long penalty: don't sleep; deliver() defers a send, an edit is skipped
         }
         if (!(e instanceof GrammyError) && attempt < 2 && (kind === "edit" || preConnect(e))) {
           await sleep(1500);
@@ -468,8 +468,8 @@ export class Telegram {
     }
   }
 
-  // Отправка содержания: разметку не понял — "parse" (пусть шлют проще); длинный 429 — отложить и дослать; сбой сети — один повтор
-  // (для ответа владельцу лучше редкий дубль, чем потеря — ccbot message_queue.py).
+  // Sends content: unparsable markup returns "parse" (the caller retries simpler); a long 429 defers and resends later;
+  // a network failure gets one retry, since a rare duplicate beats a lost reply
   private async deliver<T>(fn: () => Promise<T>): Promise<T | "parse" | "deferred"> {
     try {
       return await this.call(fn, "send");
@@ -509,14 +509,14 @@ export class Telegram {
     }, Math.max(500, this.floodUntil - Date.now() + 500));
   }
 
-  lastId = 0; // последнее сообщение в чате — его или наше: ответ на него цитировать незачем
+  lastId = 0; // the last message in the chat, theirs or ours: a reply to it needs no quote
   private remember(id: number, kind: "rich" | "text") {
     this.lastId = Math.max(this.lastId, id);
     this.kinds.set(id, kind);
     if (this.kinds.size > 2000) this.kinds.delete(this.kinds.keys().next().value!);
   }
 
-  // Кнопки, которые сейчас висят под сообщением: «Пульт» повторяет кнопки запроса, чтобы решать в одно касание.
+  // The buttons now under a message: the dashboard repeats a request's buttons for one-tap decisions
   private keyboards = new Map<number, Button[][]>();
   buttonsOf(messageId: number): Button[][] | undefined {
     return this.keyboards.get(messageId);
@@ -528,16 +528,14 @@ export class Telegram {
     if (this.keyboards.size > 300) this.keyboards.delete(this.keyboards.keys().next().value!);
   }
 
-  // Отправляет Markdown владельцу; длинное режет на части. Возвращает id сообщений.
-  // forceReply — поле ввода у владельца сразу встаёт ответом на это сообщение (подсказка — в поле).
-  // Что бот отправил владельцу без архитектора (сводки, быстрые ответы, сообщения о связи, ссылки): архитектор видит это
-  // со следующим сообщением владельца. Иначе он о них не знает и считает последним своё старое сообщение.
+  // What the bot sent the owner without the architect (summaries, quick answers, connection notes, links). The architect
+  // sees it with the owner's next message; otherwise it would take its own old message for the last one.
   hostSent: { at: number; text: string }[] = [];
   lastOwnerAt = 0;
-  // его сообщения за последние полчаса: «останови», «поставь цель» — его слово, второй раз кнопкой не спрашиваем
+  // The owner's messages from the last half hour: "stop X" or "set a goal" there is their word, so no second question
   ownerSaid: { at: number; text: string }[] = [];
-  // Ночью (0:00–8:00) владелец спит: даже «тихое» сообщение зажигает баннер. Что он не просил и что не ждёт его
-  // кнопки — откладываем до утреннего итога.
+  // At night (0:00–8:00) the owner sleeps, and even a silent message lights up the screen. What they didn't ask for and
+  // what needs no button waits for the morning summary.
   private nightHeld = readJson<{ at: number; text: string }[]>(NIGHT_FILE, []);
   takeNightHeld() {
     const held = this.nightHeld;
@@ -546,11 +544,13 @@ export class Telegram {
     return held;
   }
 
-  // skipAtNight — ночью, пока он спит, не откладывать до утра, а не слать вовсе: утренний итог покажет это сам (страницы)
+  // Sends Markdown to the owner, split into parts if long; returns the message ids. forceReply turns the owner's input
+  // field into a reply to this message, with the text as placeholder. skipAtNight drops the message at night instead
+  // of holding it, since the morning summary shows it anyway (new pages).
   async send(md: string, opts: { replyTo?: number; buttons?: Button[][]; silent?: boolean; threadId?: number; forceReply?: string; from?: "architect"; asked?: string; skipAtNight?: boolean } = {}): Promise<number[]> {
     const chat = this.owner;
     if (!chat) return [];
-    // вид задаёт код, а не модель: жирное, адреса кнопками, типографика, без точки в конце
+    // code shapes the message, not the model: bold, URLs as buttons, typography, no final period
     const shaped = urlsToButtons(tameBold(opts.from === "architect" ? lineDots(md) : md), pageTitle);
     const clean = noFinalDot(typograph(scrub(shaped.md)));
     if (shaped.links.length) opts = { ...opts, buttons: [...(opts.buttons ?? []), ...shaped.links.map((l) => [{ text: l.text, url: l.url }])] };
@@ -564,11 +564,11 @@ export class Telegram {
       log("tg", `ночью отложено до итога: ${clean.replace(/\s+/g, " ").slice(0, 80)}`);
       return [];
     }
-    // ночью (0:00–8:00 по часам Mac) — без звука, если отправитель не попросил звук явно
+    // silent at night (0:00–8:00 Mac time) unless sound was asked for
     opts = { ...opts, silent: opts.silent ?? night };
-    log("tg", `→ ${opts.silent ? "(тихо) " : ""}${clean.replace(/\s+/g, " ").slice(0, 80)}`); // что ушло владельцу — для разбора жалоб
+    log("tg", `→ ${opts.silent ? "(тихо) " : ""}${clean.replace(/\s+/g, " ").slice(0, 80)}`);
     if (opts.from !== "architect") this.hostSent = [...this.hostSent, { at: Date.now(), text: opts.asked ? `на его «${opts.asked}» — ${clean}` : clean }].slice(-12);
-    // полный текст и кнопки — отдельно: по первым 80 знакам не прочесть, что бот написал
+    // the full text and buttons go to sent.jsonl, for looking into complaints
     try {
       appendFileSync(join(LOGS, "sent.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), silent: opts.silent, text: clean, buttons: opts.buttons?.map((row) => row.map((b) => b.text)) })}\n`);
     } catch {}
@@ -602,7 +602,7 @@ export class Telegram {
     return ids;
   }
 
-  // Последние сообщения архитектора — чтобы ошибку в них исправить на месте, а не только новым сообщением
+  // The architect's recent messages, so a mistake can be fixed in place (fix_message)
   private architectSent: { id: number; text: string }[] = [];
   async correct(which: number, md: string): Promise<boolean> {
     const m = this.architectSent.at(-which);
@@ -620,11 +620,11 @@ export class Telegram {
     return r.message_id;
   }
 
-  // buttons: undefined — не трогать, null — убрать.
+  // buttons: undefined keeps them, null removes them
   async edit(messageId: number, md: string, opts: { buttons?: Button[][] | null } = {}) {
     const chat = this.owner;
     if (!chat || !messageId) return;
-    if (this.flooded && opts.buttons === undefined) return; // промежуточная правка подождёт — следующий круг покажет то же
+    if (this.flooded && opts.buttons === undefined) return; // an interim edit can wait for the next pass
     const clean = noFinalDot(typograph(scrub(tameBold(md))));
     const reply_markup = keyboard(opts.buttons);
     this.keep(messageId, opts.buttons);
@@ -641,9 +641,9 @@ export class Telegram {
     }
   }
 
-  // Потоковый черновик ответа: живёт ~30 с, поэтому его обновляют, пока идёт работа; итог — обычным send().
-  // Пока текста нет — блок «Думаю…» (что сейчас делается); когда пишется ответ — сам текст Markdown-ом.
-  // Ошибки разбираем: 429 и сеть — пропустить кадр; «не понял разметку» — проще, но только до конца хода (OpenClaw #92004, Hermes).
+  // The streaming draft of a reply lasts about 30 s, so it is refreshed while work goes on; the result is a normal send().
+  // Before any text it shows a "Thinking…" block, then the reply's Markdown as it is written. A 429 or network error
+  // skips the frame; unparsable markup falls back to simpler drafts until the turn ends.
   resetDraft() {
     this.draftMode = "rich";
   }
@@ -669,27 +669,28 @@ export class Telegram {
         this.floodUntil = Date.now() + (e.parameters?.retry_after ?? 3) * 1000;
         return;
       }
-      if (!(e instanceof GrammyError) || e.error_code !== 400) return; // сеть — просто пропустить кадр
+      if (!(e instanceof GrammyError) || e.error_code !== 400) return; // network error: skip the frame
       this.draftMode = this.draftMode === "rich" && body ? "blocks" : "plain";
       log("tg", `черновик: Telegram не принял (${e.description}) — до конца хода проще`);
     }
   }
 
-  // Правка, которая говорит, удалась ли она: false — сообщения больше нет (удалено), надо слать новое.
+  // An edit that reports its outcome; "gone" means the message was deleted and a new one is needed
   async editStrict(messageId: number, md: string, opts: { buttons?: Button[][] | null } = {}): Promise<"ok" | "gone" | "error"> {
     const chat = this.owner;
     if (!chat) return "error";
-    if (this.flooded) return "error"; // пульт обновится на следующем круге
+    if (this.flooded) return "error"; // the dashboard updates on the next pass
     try {
       await this.call(() =>
-        // тот же вид, что у /status: закреп правится по 170 раз за день и обходил типограф — тире и предлоги на краю строки
+        // shaped like /status: the pinned message is edited all day and must go through the typographer too
         this.bot.api.raw.editMessageText({ chat_id: chat, message_id: messageId, rich_message: { markdown: richSafe(clip(noFinalDot(typograph(scrub(tameBold(md)))), RICH_LIMIT)) }, reply_markup: keyboard(opts.buttons) }),
       );
       return "ok";
     } catch (e) {
       const s = String(e);
       if (s.includes("message is not modified")) return "ok";
-      // пересоздавать — только если Telegram прямо ответил, что сообщения нет; сеть, сон Mac, 429 — повторить позже (иначе плодятся копии «Пульта»)
+      // recreate only when Telegram says the message is gone; network errors, sleep and 429 retry later, or copies of
+      // the dashboard would pile up
       if (e instanceof GrammyError && e.error_code === 400 && /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i.test(e.description)) return "gone";
       log("tg", "правка не удалась — повторю позже", s);
       return "error";
@@ -704,11 +705,6 @@ export class Telegram {
   async pin(messageId: number) {
     const chat = this.owner;
     if (chat) await this.bot.api.pinChatMessage(chat, messageId, { disable_notification: true }).catch((e) => log("tg", "не закрепил", String(e)));
-  }
-
-  async remove(messageId: number) {
-    const chat = this.owner;
-    if (chat) await this.bot.api.deleteMessage(chat, messageId).catch(() => {});
   }
 
   async typing(threadId?: number) {
@@ -728,11 +724,11 @@ export class Telegram {
     return m.message_id;
   }
 
-  // Альбом снимков (до 10): первая подпись — общая.
+  // An album of up to 10 screenshots; the first caption serves for all
   async sendAlbum(items: { path: string; caption?: string }[], opts: { threadId?: number; replyTo?: number; silent?: boolean } = {}): Promise<number[]> {
     const chat = this.owner;
     if (!chat || !items.length) return [];
-    // снимки хоста (после выкладки, «так станет») архитектор тоже должен знать, иначе пришлёт такие же сам
+    // the architect must know about the host's screenshots too, or it would send the same ones
     this.hostSent = [...this.hostSent, { at: Date.now(), text: `[снимков: ${Math.min(items.length, 10)}] ${items[0].caption ?? ""}`.trim() }].slice(-12);
     const media = items.slice(0, 10).map((it) => ({ type: "photo" as const, media: new InputFile(it.path), caption: it.caption ? clip(noFinalDot(typograph(scrub(it.caption))), 1000) : undefined }));
     try {
@@ -764,14 +760,9 @@ export class Telegram {
       await this.refreshMe();
     }
   }
-
-  async renameTopic(threadId: number, name: string) {
-    const chat = this.owner;
-    if (chat) await this.bot.api.editForumTopic(chat, threadId, { name: clip(name, 128) }).catch(() => {});
-  }
 }
 
-// Ошибка до соединения — запрос точно не ушёл, повтор не создаст дубль (OpenClaw network-errors.ts).
+// An error before connecting: the request surely didn't leave, so a retry can't duplicate it
 function preConnect(e: unknown): boolean {
   const pick = (x: any): string => String(x?.code ?? x?.cause?.code ?? x?.error?.code ?? x?.error?.cause?.code ?? "");
   return /^(ECONNREFUSED|ENOTFOUND|ENETDOWN|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN)$/.test(pick(e));

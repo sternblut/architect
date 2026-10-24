@@ -1,11 +1,10 @@
 #!/bin/sh
-# Архитектор — установка на Mac одной командой:  curl -fsSL __DIST__/i | sh
-# Ставит в ~/.archi код хоста и свой config.json, подключает Telegram по QR (src/connect.ts), включает автозапуск.
-# Вход в Claude — только окном Anthropic (claude auth login): этот скрипт и сервер его не видят.
-# Адреса раздачи и ящика, имя бота-менеджера, его ключ и контрольная сумма кода вшиваются при сборке раздачи
-# (bun src/guest.ts dist). Снять всё одной командой: archi uninstall.
-# Язык — тот же, что у бота, собравшего раздачу (__LANG__); ARCHI_LANG=en|ru — свой. Он же уходит в config.json.
-# Всё тело — в main: если загрузка оборвётся на середине, обрывок не выполнится.
+# Architect: one-command install on a Mac:  curl -fsSL __DIST__/i | sh
+# Puts the host code and its config.json in ~/.archi, connects Telegram by QR code (src/connect.ts), turns on start at login.
+# Claude sign-in happens only in Anthropic's own window (claude auth login); neither this script nor the server sees it.
+# The distribution and box URLs, the manager bot, its key and the code checksum are filled in by `bun src/guest.ts dist`.
+# Language: that of the bot that built the distribution (__LANG__), or ARCHI_LANG=en|ru; it also goes to config.json.
+# Remove everything with: archi uninstall. The whole body is in main(), so a truncated download runs nothing.
 set -eu
 
 main() {
@@ -18,14 +17,14 @@ main() {
   SHA="__SHA256__"
   DIR="$HOME/.archi"
   APP="$DIR/app"
-  # Вопросы — с клавиатуры, даже когда сам скрипт пришёл через «| sh»; без терминала спрашивать некого
+  # Answers come from the keyboard even when the script arrives through "| sh"
   TTY=/dev/tty
   (: <"$TTY") 2>/dev/null || die "$(t "Запустите команду в Терминале macOS." "Run the command in macOS Terminal.")"
 
   printf '\n'; bold "$(t "Архитектор — установка на этот Mac" "Architect — installing on this Mac")"; printf '\n'
   [ "$(uname -s)" = Darwin ] || die "$(t "Нужен macOS." "macOS is required.")"
 
-  # Claude Code — свой, со своим входом
+  # Claude Code, with the user's own sign-in
   if ! command -v claude >/dev/null 2>&1; then
     printf '%s' "$(t '  Claude Code не найден. Поставить официальным установщиком Anthropic? Enter — да, Ctrl-C — нет. ' '  Claude Code isn’t installed. Install it with the official Anthropic installer? Enter — yes, Ctrl-C — no. ')"
     read -r _ <"$TTY"
@@ -39,7 +38,7 @@ main() {
   plan="$(claude auth status 2>/dev/null | sed -n 's/.*"subscriptionType" *: *"\([^"]*\)".*/\1/p' | head -n 1 | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
   ok "Claude Code  " "$(t "вход выполнен${plan:+, подписка $plan}" "signed in${plan:+, $plan plan}")"
 
-  # Bun — среда хоста (нужен 1.2 или новее: текстовый bun.lock)
+  # Bun 1.2 or newer, for the text bun.lock
   if ! command -v bun >/dev/null 2>&1; then
     [ -x "$HOME/.bun/bin/bun" ] || remote https://bun.sh/install >/dev/null 2>&1 || die "$(t "Bun не поставился." "Bun didn’t install.")"
     PATH="$HOME/.bun/bin:$PATH"
@@ -48,7 +47,7 @@ main() {
   case "$v" in 0.* | 1.0.* | 1.1.*) die "$(t "Нужен Bun 1.2 или новее, сейчас $v. Обновите: bun upgrade" "Bun 1.2 or newer is required, you have $v. Update it: bun upgrade")" ;; esac
   ok "Bun          " "$v"
 
-  # Код хоста: сверяем контрольную сумму раздачи
+  # Host code, checked against the distribution checksum
   mkdir -p "$DIR" && chmod 700 "$DIR"
   tmp="$(mktemp -d "$DIR/.new.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
@@ -56,8 +55,8 @@ main() {
   [ "$(shasum -a 256 "$tmp/archi.tgz" | cut -d' ' -f1)" = "$SHA" ] || die "$(t "Код не совпал с раздачей — установка остановлена." "The code doesn’t match the distribution — installation stopped.")"
   mkdir "$tmp/app" && tar -xzf "$tmp/archi.tgz" -C "$tmp/app"
   (cd "$tmp/app" && bun install --frozen-lockfile --production >"$tmp/install.log" 2>&1) || die "$(t "Не поставились зависимости" "Dependencies didn’t install"): $(tail -n 3 "$tmp/install.log")"
-  # Обновление: прежняя версия уходит в app.old целиком и возвращает настройки, состояние, журналы и заметки.
-  # Оборвётся посередине — всё лежит в ~/.archi/app.old.
+  # Reinstall: the previous version moves to app.old and hands back its settings, state, logs and notes.
+  # If this is interrupted, everything is still in ~/.archi/app.old.
   if [ -d "$APP" ]; then
     "$APP/bin/arch" off >/dev/null 2>&1 || true
     rm -rf "$DIR/app.old" && mv "$APP" "$DIR/app.old"
@@ -90,12 +89,12 @@ JSON
   row "$(t "Код          " "Code         ")" "~/.archi/app"
   printf '\n'
 
-  # Telegram — по QR и коду с экрана, ключ бота приходит на этот Mac зашифрованным
+  # Telegram: QR code and the on-screen code; the bot token arrives encrypted for this Mac
   if [ ! -f "$APP/state/owner.json" ]; then
     bun "$APP/src/connect.ts" "$MANAGER" "$KEY" "$RELAY" <"$TTY" || exit 1
   fi
 
-  # Автозапуск при входе в macOS и команда archi (чужую команду с таким именем не трогаем)
+  # Start at login and the archi command (an unrelated archi command is left alone)
   mkdir -p "$HOME/.local/bin"
   link="$HOME/.local/bin/archi"
   if [ ! -e "$link" ] || case "$(readlink "$link" 2>/dev/null)" in "$DIR"/*) true ;; *) false ;; esac; then
@@ -111,14 +110,14 @@ JSON
   printf '\n'
 }
 
-# сообщение — на языке установки: t "по-русски" "in English"
+# t "Russian" "English": the text in the install's language
 t() { if [ "$L" = en ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
-# подписи слева выровнены пробелами вручную: printf считает байты, а кириллица — по два байта на букву
+# Labels are padded by hand: printf pads by bytes, and a Cyrillic letter takes two
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 row() { printf '  %s %s\n' "$1" "$2"; }
 ok() { printf '  %s \033[32m%s\033[0m\n' "$1" "$2"; }
 die() { printf '\n\033[31m%s\033[0m\n' "$1" >&2; exit 1; }
-# Чужой установщик (Anthropic, Bun): сначала целиком скачать, потом запустить — без «curl | bash» и его тихих обрывов
+# Third-party installers (Anthropic, Bun): download in full, then run, so a cut-off download never runs
 remote() {
   f="$(mktemp)"
   if curl -fsSL "$1" -o "$f"; then bash "$f"; r=$?; else r=1; fi

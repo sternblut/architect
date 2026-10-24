@@ -1,4 +1,4 @@
-// Инструменты архитектора (MCP в процессе хоста). Каждый делает одно дело и возвращает текст для модели.
+// The architect's tools, an in-process MCP server. Each does one thing and returns text for the model.
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -19,9 +19,7 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 const fail = (t: string) => ({ content: [{ type: "text" as const, text: t }], isError: true });
 const SECRET_FILE = /(^|\/)(\.env(\..*)?|id_(rsa|ed25519|ecdsa)(\.pub)?|.*\.(pem|key|p12|keychain-db)|credentials(\.json)?|hook-secret|owner\.json|worker-settings\.json)$/i;
 
-// summary — сводка «Пульта» (те же имена и состояния, что видит владелец); без неё — та же сводка без запросов из чата
-// Перезапуск по слову владельца — инструментом архитектора и сразу хостом («перезапусти Анализ отзывов»). Итог — словами
-// для владельца, по группам: кого перезапустил, кого перезапущу после хода, кого отсюда не перезапустить.
+// The result of restart_session, grouped: restarted, to restart after the turn, can't be restarted from here
 export async function restartReport(targets: AgentRow[], rows: AgentRow[]): Promise<string> {
   const done: string[] = [];
   const later: string[] = [];
@@ -49,7 +47,8 @@ export async function restartReport(targets: AgentRow[], rows: AgentRow[]): Prom
     .join("\n") || "Запущенных сессий нет.";
 }
 
-// wake — сообщение владельцу сразу и со звуком, с кнопками шагов (Architect.wake)
+// summary: the dashboard overview (the names and states the owner sees); without it, the same overview without pending
+// requests. wake: a message to the owner right away and with sound, with step buttons (Architect.wake).
 export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI; claudePath: string; bunPath: string; summary?: (full: boolean) => Promise<string>; wake?: (md: string) => Promise<void> }) {
   return createSdkMcpServer({
     name: "arch",
@@ -91,7 +90,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         async ({ session, lines, hours, find }) => {
           const r = await findSession(session);
           if (!r?.sessionId) return fail(`Сессию «${session}» не нашёл. Посмотри список инструментом sessions.`);
-          // за сутки и поиск — по журналу поглубже: раньше архитектор писал для этого скрипты в Bash
+          // hours and find read much deeper into the transcript
           const deep = hours !== undefined || find !== undefined;
           const since = hours ? Date.now() - hours * 3600_000 : 0;
           const all = conversation(readTail(transcriptPath(r.cwd, r.sessionId), deep ? 30_000_000 : undefined).filter((e) => !since || Date.parse(e.timestamp ?? "") >= since), deep ? 100_000 : (lines ?? 20));
@@ -102,7 +101,6 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { annotations: { readOnlyHint: true }, alwaysLoad: true },
       ),
 
-      // свежие рендеры и снимки архитектор раньше искал ls и find в Bash
       tool(
         "recent_files",
         "Файлы, которые недавно появились или поменялись в папке сессии (рендеры, снимки, отчёты): когда, размер, путь — новые сверху. session — id, sessionId или часть имени; hours — за сколько часов (по умолчанию 24).",
@@ -196,14 +194,14 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         async ({ session, words, note }) => {
           const w = words?.trim(), n = note?.trim();
           if (!w && !n) return fail("Нечего передать: нужны words или note.");
-          // его слово сверяет код, а не модель
+          // the code, not the model, checks that these are the owner's words
           if (w && !quotesOwner(w, d.tg.ownerSaid.map((x) => x.text))) {
             log("tools", "message_session: не его слова — не передаю", clip(w, 200));
             return fail("Это не его слова дословно: в его сообщениях за 30 минут их нет. Его реплику передай в words как есть (можно кусками через «…»), своё — в note.");
           }
           const r = await findSession(session);
           if (!r) return fail(`Сессию «${session}» не нашёл.`);
-          // его слова — его репликой, как если бы он написал сам; записка — подписана, и хук не возьмёт её в его кавычки
+          // the owner's words arrive as their own message; a note is signed, so the hook never quotes it as theirs
           const t = n ? `${w ? `${ownerWords([w])}\n\n` : ""}${ARCH_NOTE}${n}` : w!;
           if (r.sessionId && stopHolds.answer(r.sessionId, t)) return text("Передано: сессия ждала ответа и получила его сразу.");
           const res = await deliver(r, t);
@@ -273,8 +271,8 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { alwaysLoad: true },
       ),
 
-      // Ночью ответы архитектора ждут утра, пока владелец спит; правило «пиши ночью, только если встанет работа к утру»
-      // без этого инструмента нечем исполнить.
+      // At night the architect's replies wait for the morning; this is how it reaches the owner when work due by
+      // morning stops
       tool(
         "wake_owner",
         "Ночью (0:00–8:00), пока он спит, твои ответы ждут утреннего итога. Если встала работа, которую он ждёт к утру, или без его выбора утро встанет, — напиши ему этим инструментом: придёт сразу и со звуком. md — что случилось и что он может сделать, одной-двумя строками. Днём не нужен: обычный ответ и так приходит со звуком.",
@@ -286,7 +284,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { alwaysLoad: true },
       ),
 
-      // Обещание — запись у хоста: без неё «пришлю, когда…» терялось после смены правил, лимита и /new
+      // The host records the promise, so "I'll send it when…" survives a usage limit and /new
       tool(
         "follow_up",
         "Записать своё обещание владельцу («пришлю, когда сессия закончит», «напомню в 9:30»): хост напомнит тебе в срок, а если ты не сможешь ответить (лимит) — сам скажет ему. Без записи не обещай. what — что обещал, его словами; session — напомнить, когда эта сессия закончит ход; at — к какому времени ЧЧ:ММ по часам Mac (с session — крайний срок; без at — через 3 часа).",
@@ -327,7 +325,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
           const r = await findSession(session);
           if (!r?.sessionId) return fail(`Сессию «${session}» не нашёл.`);
           await d.ui.adopt(r.sessionId, r.cwd);
-          // карточку в чате рисуем только своим сессиям; у сессий из терминала её нет — не обещать владельцу
+          // only the architect's own sessions get a card, so don't promise one for any other
           return text(workers.get(r.sessionId) ? `Карточка «${r.name ?? r.id}» заведена.` : `Карточки в чате у этой сессии не будет: она запущена в терминале. Её состояние владелец видит в «Пульте».`);
         },
         { alwaysLoad: true },
@@ -342,9 +340,9 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
           const r = await run([d.bunPath, join(ARCH_HOME, "src", "shot-cli.ts"), url, device ?? "iphone", out, full_page ? "full" : ""], { timeoutMs: 180_000, cwd: ARCH_HOME });
           if (r.code !== 0 || !existsSync(out)) return fail(`Снимок не вышел: ${clip(r.stderr || r.stdout, 400)}`);
           const info = JSON.parse(r.stdout.trim().split("\n").pop() || "{}");
-          // своя проверка — без лишней картинки со звуком у владельца: иначе после выкладки приходят два одинаковых снимка
+          // a shot for its own check isn't sent, or the owner would get a duplicate after a deploy
           if (send === false) return text(`Снимок для твоей проверки (владельцу не ушёл): ${out} (HTTP ${info.status}, «${info.title}»). Посмотри его инструментом Read.`);
-          // подпись по-человечески: «Маяк на iPhone, 22:30», а не «https://beacon.example.com/ · iphone · HTTP 200»
+          // a human caption: "Beacon on iPhone, 22:30", not "https://beacon.example.com/ · iphone · HTTP 200"
           const site = config.sites.find((s) => url.replace(/\/$/, "").startsWith(s.url.replace(/\/$/, "")))?.name ?? url.replace(/^https?:\/\//, "").split("/")[0];
           const on = tr({ iphone: "на iPhone", macbook: "на MacBook", monitor: "на мониторе" }, { iphone: "on iPhone", macbook: "on MacBook", monitor: "on a monitor" })[device ?? "iphone"];
           await d.tg.sendFile(out, caption ?? `${site} ${on}, ${hhmm()}`, true, undefined, "architect");
@@ -371,7 +369,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
   });
 }
 
-// Доверие папке ставится только после «да» владельца кнопкой (см. start_session).
+// Called only after the owner's yes (see start_session)
 function trustFolder(key: string) {
   const path = join(HOME, ".claude.json");
   const cfg = JSON.parse(readFileSync(path, "utf8"));

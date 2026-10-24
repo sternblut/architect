@@ -1,6 +1,6 @@
-// Снимок страницы отдельным процессом: общая очередь браузера (config.browserLock, если есть) и headless-движок.
-// bun src/shot-cli.ts <url> <iphone|macbook|monitor> <out.png> [full] [запись-связки-ключей]
-// Пароль закрытого сайта процесс читает из связки ключей сам и никуда не выводит.
+// Screenshots a page in its own process, behind the shared browser queue (config.browserLock) when there is one.
+// bun src/shot-cli.ts <url> <iphone|macbook|monitor> <out.png> [full] [keychain-service]
+// A protected site's visitor password is read from the Keychain here and never printed.
 import { webkit, chromium } from "playwright-core";
 import { HOME, config, tr } from "./config";
 
@@ -20,7 +20,7 @@ try {
   const lock = await import(config.browserLock!.replace(/^~(?=\/)/, HOME));
   release = await lock.acquireBrowserLock(`architect shot ${url}`);
 } catch {
-  // очередь недоступна — снимаем без неё (один короткий браузер)
+  // no queue: shoot without it
 }
 let httpCredentials: { username: string; password: string } | undefined;
 if (keychain) {
@@ -29,7 +29,7 @@ if (keychain) {
 }
 const browser = await D.engine.launch({ headless: true });
 try {
-  // сайт — на языке владельца, как его увидит он сам
+  // the owner's locale, as they would see the site
   const ctx = await browser.newContext({ viewport: { width: D.width, height: D.height }, deviceScaleFactor: D.scale, isMobile: D.mobile, hasTouch: D.mobile, locale: tr("ru-RU", "en-US"), httpCredentials });
   const page = await ctx.newPage();
   const res = await page.goto(url, { waitUntil: "load", timeout: 45_000 });

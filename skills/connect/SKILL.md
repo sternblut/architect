@@ -16,7 +16,7 @@ The user wants to drive Claude Code on this Mac from Telegram. Talk in the user'
    - When the output says the Mac is connected, the host starts by itself. Go to step 7.
 4. **Own bot.** Ask the user to create a bot: in Telegram, open @BotFather, send `/newbot`, pick a name and keep the token it replies with. Never ask them to paste the token into this chat.
 5. **The token.** Run `archi token --dialog`. A macOS window asks for the token with hidden input and puts it straight into the Keychain. Tell the user the window is open on the Mac. Then run `archi on`: the host starts now and at every login.
-6. **Pair.** Run `archi pair`. It prints a link with a one-time code. Show the link; the user opens it on the phone and writes anything. From then on the bot answers only their Telegram account.
+6. **Pair.** Run `archi pair`. It prints a link with a one-time code. Show the link; the user opens it on the phone and taps Start. From then on the bot answers only their Telegram account.
 7. **Done.** The bot asks the setup questions right in the chat: folders, sites, GitHub. Tell the user in two lines: they write tasks to the bot in plain words or by voice, and `/architect:off` turns everything off.
 
 If a step fails, show its last lines and stop. Do not retry blindly and do not edit files to work around it.

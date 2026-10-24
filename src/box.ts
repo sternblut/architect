@@ -1,13 +1,13 @@
-// Почтовый ящик подключения: токен личного бота едет с Mac менеджера на Mac человека запечатанным конвертом.
-// Конверт зашифрован на открытый ключ Mac человека и подписан ключом менеджера; сервер-ящик видит только шифр.
-// Схема — как у запечатанных конвертов age и libsodium: одноразовый ключ X25519 + HKDF-SHA256 + AES-256-GCM, подпись Ed25519.
-// Только WebCrypto. Протокол ящика — test/mock-relay.ts (образец) и relay/src/index.ts.
+// Connection mailbox: a personal bot's token travels from the manager's Mac to the user's Mac in a sealed envelope,
+// encrypted to the user's Mac public key and signed by the manager; the box server sees only ciphertext.
+// Sealed-box scheme as in age and libsodium: ephemeral X25519 + HKDF-SHA256 + AES-256-GCM, Ed25519 signature. WebCrypto only.
+// Box protocol: relay/src/index.ts; test/mock-relay.ts stands in for it in tests.
 
 const te = new TextEncoder();
 const td = new TextDecoder();
 const subtle = crypto.subtle;
 const V = "archi-box-v1";
-const FRESH_MS = 15 * 60_000; // конверт старше 15 минут не принимается
+const FRESH_MS = 15 * 60_000; // older letters are rejected
 
 export const b64u = (b: Uint8Array | ArrayBuffer) => Buffer.from(b instanceof ArrayBuffer ? new Uint8Array(b) : b).toString("base64url");
 export const unb64u = (s: string) => new Uint8Array(Buffer.from(s, "base64url"));
@@ -15,9 +15,9 @@ const pair = (alg: "X25519" | "Ed25519", uses: ("deriveBits" | "sign" | "verify"
 const x25519 = (pub: CryptoKey, priv: CryptoKey) => subtle.deriveBits({ name: "X25519", public: pub } as never, priv, 256);
 const isKey = (s: unknown, bytes: number) => typeof s === "string" && /^[A-Za-z0-9_-]+$/.test(s) && unb64u(s).length === bytes;
 
-// Конверт на проводе: всё — base64url.
+// On the wire; every field is base64url
 export type Envelope = { v: 1; eph: string; iv: string; ct: string; sig: string };
-// Письмо внутри конверта.
+// The envelope's plaintext
 export type Letter = {
   v: 1;
   token: string;
@@ -27,7 +27,7 @@ export type Letter = {
   at: number;
 };
 
-// Ключ Mac человека: живёт только в памяти процесса подключения; наружу — открытая часть, 43 знака (влезает в ссылку /start).
+// The user's Mac key lives only in the connect process's memory; its public part is 43 characters, short enough for a /start link
 export async function deviceKeys(): Promise<{ pub: string; priv: CryptoKey }> {
   const k = await pair("X25519", ["deriveBits"]);
   return { pub: b64u(await subtle.exportKey("raw", k.publicKey)), priv: k.privateKey };
@@ -35,19 +35,19 @@ export async function deviceKeys(): Promise<{ pub: string; priv: CryptoKey }> {
 
 export const isDevicePub = (s: unknown): s is string => isKey(s, 32);
 
-// Имя ящика выводится из ключа Mac: сервер не знает ни ключа, ни владельца ящика.
+// The box id is derived from the Mac key, so the server learns neither the key nor whose box it is
 export async function boxId(devicePub: string): Promise<string> {
   return b64u(await subtle.digest("SHA-256", te.encode(`${V}:${devicePub}`))).slice(0, 32);
 }
 
-// Код сверки: четыре цифры из ключа Mac. Mac печатает их рядом с QR, человек вводит в Telegram.
-// Ссылку из чужого Терминала можно переслать кому угодно, а код с экрана своего Mac — только увидеть.
+// Four digits derived from the Mac key, printed next to the QR code and typed in Telegram. A link can be forwarded
+// to anyone; the code takes seeing this Mac's screen.
 export async function pairCode(devicePub: string): Promise<string> {
   const h = new Uint8Array(await subtle.digest("SHA-256", te.encode(`archi-code-v1:${devicePub}`)));
   return String(((h[0] << 16) | (h[1] << 8) | h[2]) % 10_000).padStart(4, "0");
 }
 
-// Ключ менеджера (подпись конвертов): хранится как PKCS#8 в base64url, открытая часть — 43 знака.
+// The manager's signing key: PKCS#8 in base64url; the public part is 43 characters
 export async function newManagerKey(): Promise<string> {
   const k = await pair("Ed25519", ["sign", "verify"]);
   return b64u(await subtle.exportKey("pkcs8", k.privateKey));
@@ -61,7 +61,7 @@ export async function managerKey(pkcs8: string): Promise<{ priv: CryptoKey; pub:
 
 async function aesKey(shared: ArrayBuffer, ephPub: Uint8Array, devPub: Uint8Array) {
   const s = new Uint8Array(shared);
-  if (s.every((x) => x === 0)) throw new Error("плохой ключ"); // точка малого порядка — общий секрет нулевой
+  if (s.every((x) => x === 0)) throw new Error("плохой ключ"); // small-order point: all-zero shared secret
   const ikm = await subtle.importKey("raw", s, "HKDF", false, ["deriveKey"]);
   const salt = new Uint8Array([...ephPub, ...devPub]);
   return subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt, info: te.encode(V) }, ikm, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
@@ -83,7 +83,7 @@ export async function seal(letter: Letter, devicePub: string, signer: CryptoKey)
   return { v: 1, ...body, sig: b64u(await subtle.sign({ name: "Ed25519" }, signer, signed(id, body))) };
 }
 
-// Открывает конверт. Бросает, если подпись не менеджера, шифр подменён, письмо старое или не того вида.
+// Throws when the signature isn't the manager's, the ciphertext was altered, or the letter is stale or malformed
 export async function open(env: Envelope, devicePriv: CryptoKey, devicePub: string, managerPub: string, now = Date.now()): Promise<Letter> {
   if (env?.v !== 1 || !isKey(env.eph, 32) || !isKey(env.iv, 12) || !isKey(env.sig, 64) || typeof env.ct !== "string" || env.ct.length > 8000) throw new Error("конверт не того вида");
   const id = await boxId(devicePub);
@@ -99,8 +99,8 @@ export async function open(env: Envelope, devicePriv: CryptoKey, devicePub: stri
   return l;
 }
 
-// ── клиент ящика ─────────────────────────────────────────────────────────────
-// POST /v1/box/{id} — положить конверт; GET /v1/box/{id}?wait=25 — дождаться конвертов (до 25 с). Без ключей и паролей.
+// ── box client ───────────────────────────────────────────────────────────────
+// POST /v1/box/{id} leaves an envelope; GET /v1/box/{id}?wait=25 waits up to 25 s for envelopes. No keys or passwords.
 
 export async function postBox(relay: string, id: string, env: Envelope): Promise<void> {
   const r = await fetch(`${relay.replace(/\/$/, "")}/v1/box/${id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(env), signal: AbortSignal.timeout(15_000) });

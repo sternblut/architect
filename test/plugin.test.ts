@@ -1,20 +1,20 @@
-// Архитектор как плагин Claude Code: код — в папке версии, всё постоянное — в папке данных плагина.
+// Architect as a Claude Code plugin: code in the version folder, everything persistent in the plugin data folder.
 import { expect, test } from "bun:test";
 import { DATA, WORK, ARCH_HOME, pluginData } from "../src/config";
 
-test("папка данных плагина — по папке его версии, как её называет Claude Code", () => {
+test("finds the plugin data folder from the version folder, as Claude Code names it", () => {
   expect(pluginData("/Users/x/.claude/plugins/cache/sapfir/architect/0f3c2a1b9e7d", "/Users/x")).toBe("/Users/x/.claude/plugins/data/architect-sapfir");
   expect(pluginData("/Users/x/Desktop/мои проекты/architect", "/Users/x")).toBeUndefined();
 });
 
-test("из git — всё рядом с кодом, как раньше", () => {
+test("in a git clone everything stays next to the code", () => {
   expect(DATA).toBeUndefined();
   expect(WORK).toBe(ARCH_HOME);
 });
 
-// после обновления плагина у новой версии нет node_modules (Claude Code их не ставит), и хост виснет на import.
-// Стартер берёт их у прежней версии с теми же package.json и bun.lock — клоном APFS, за секунды, без сети.
-test("стартер после обновления: зависимости — клоном от прежней версии, потом запуск хоста новой версии", async () => {
+// After a plugin update the new version has no node_modules (Claude Code doesn't install them) and the host would hang
+// on import. The starter clones them from a previous version with the same package.json and bun.lock, without network.
+test("after an update the starter clones dependencies from the previous version, then runs the new host", async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -39,6 +39,6 @@ test("стартер после обновления: зависимости —
   const p = Bun.spawnSync([process.execPath, join(data, "launch.ts")], { env: { ...process.env, HOME: home, ARCH_DATA: "" }, stdout: "pipe", stderr: "pipe" });
   expect(p.stdout.toString()).toContain("хост bbbbbbbbbbbb");
   expect(readFileSync(join(fresh, "node_modules", "grammy", "mark"), "utf8")).toBe("старая");
-  expect(p.stderr.toString()).not.toContain("ставлю зависимости"); // без bun install и сети
-  expect(existsSync(join(cache, "aaaaaaaaaaaa", "node_modules"))).toBe(true); // у прежней версии ничего не забрали
+  expect(p.stderr.toString()).not.toContain("ставлю зависимости"); // no bun install, no network
+  expect(existsSync(join(cache, "aaaaaaaaaaaa", "node_modules"))).toBe(true); // the previous version keeps its copy
 });

@@ -1,9 +1,9 @@
-// Дежурный архитектора в облаке (Cloudflare Worker + Durable Object): пока Mac спит, отвечает владельцу и копит его сообщения.
-// Секретов здесь нет:
-// — токена бота нет: ответ владельцу — вызов Bot API в теле ответа на webhook, его выполняет сам Telegram;
-// — путь webhook знают только Telegram и Mac (новый на каждый сон), здесь лежит лишь его SHA-256;
-// — запросы Mac подписаны его ключом Ed25519, здесь только открытый ключ (MAC_KEY).
-// Решений здесь не бывает: нажатия кнопок и «да код» во сне не копятся — «да» Mac принимает только из своего опроса Telegram.
+// The architect's cloud relay (Cloudflare Worker + Durable Object): while the Mac sleeps it answers the owner and keeps
+// their messages. It holds no secrets:
+// - no bot token: a reply is a Bot API call in the webhook response, which Telegram itself executes;
+// - the webhook path is known only to Telegram and the Mac (a new one for every sleep); only its SHA-256 is stored;
+// - the Mac signs its requests with its Ed25519 key; only the public key (MAC_KEY) is here.
+// It never takes decisions: taps and "yes <id>" aren't queued, and the Mac accepts a yes only from its own polling.
 
 type Namespace = { idFromName(name: string): unknown; get(id: unknown): { fetch(req: Request): Promise<Response> } };
 type Env = { RELAY: Namespace; BOX: Namespace; MAC_KEY: string };
@@ -17,15 +17,15 @@ type State = { asleep: boolean; pathHash?: string; owner?: number; since?: strin
 type Msg = { message_id: number; from?: { id: number }; chat: { id: number; type: string }; text?: string; media_group_id?: string; is_topic_message?: boolean; message_thread_id?: number };
 type Update = { update_id: number; message?: Msg; callback_query?: { id: string; from: { id: number } } };
 
-const STATUS = /^(\/status\b|(что у нас|статус|сводка)[\s?!.]*$)/i; // как в src/main.ts
-const DECISION = /^(да|нет|yes|no)\s+[a-z0-9]{6,10}$/i; // запасное «да код» из src/approvals.ts
+const STATUS = /^(\/status\b|(что у нас|статус|сводка)[\s?!.]*$)/i; // /status or a Russian "what's up"
+const DECISION = /^(да|нет|yes|no)\s+[a-z0-9]{6,10}$/i; // the "yes <id>" fallback of src/approvals.ts
 const QUEUE = "u:";
 
 export default {
-  // чужое отсекается здесь, не будя Durable Object
+  // Reject anything foreign here, without waking the Durable Object
   fetch(req: Request, env: Env) {
     const { pathname } = new URL(req.url);
-    // ящик подключения нового Mac — свой Durable Object на каждый ящик (класс Box ниже)
+    // the connection mailbox: one Durable Object per box (class Box below)
     const box = pathname.match(/^\/v1\/box\/([\w-]{16,64})$/);
     if (box) return req.method === "POST" || req.method === "GET" ? env.BOX.get(env.BOX.idFromName(box[1])).fetch(req) : none();
     if (req.method !== "POST" || !(pathname.startsWith("/u/") || pathname === "/sleep" || pathname === "/pull")) return none();
@@ -40,8 +40,8 @@ export class Relay {
     private env: Env,
   ) {}
 
-  // Всё, что не хранилище (тело, хеш, подпись), — до чтения состояния: дальше только get/put, и входной шлюз
-  // Durable Object не пустит между ними другой запрос — чтение и запись состояния не перемешаются.
+  // Everything but storage (body, hash, signature) happens before reading the state; after that only get/put follow,
+  // and the Durable Object's input gate keeps other requests from interleaving between them.
   async fetch(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
     if (req.method !== "POST") return none();
@@ -54,13 +54,13 @@ export class Relay {
     const body = await req.text();
     if (!(await this.signed(pathname, ts, req.headers.get("x-relay-sig") ?? "", body))) return new Response(null, { status: 401 });
     const st = await this.state();
-    if (ts <= st.lastTs) return new Response(null, { status: 401 }); // повтор уже принятого запроса
+    if (ts <= st.lastTs) return new Response(null, { status: 401 }); // a replay of an accepted request
     if (pathname === "/sleep") {
       const b = JSON.parse(body) as Pick<State, "pathHash" | "owner" | "since" | "summary">;
       await this.save({ asleep: true, pathHash: b.pathHash, owner: b.owner, since: b.since, summary: b.summary, lastTs: ts });
       return json({ ok: true });
     }
-    // /pull — Mac проснулся: подтверждённое удалить, остальное отдать; путь и сводка больше не нужны
+    // /pull: the Mac is awake; delete what it acknowledged, return the rest, forget the path and summary
     const { ack = 0 } = JSON.parse(body) as { ack?: number };
     const q = await this.ctx.storage.list<Update>({ prefix: QUEUE, limit: 500 });
     const done = [...q.keys()].filter((k) => Number(k.slice(QUEUE.length)) <= ack);
@@ -76,7 +76,7 @@ export class Relay {
     const q = u.callback_query;
     if (q) return q.from.id === st.owner ? json({ method: "answerCallbackQuery", callback_query_id: q.id, text: "Mac спит — нажмите, когда проснётся." }) : ok();
     const m = u.message;
-    if (!m || m.from?.id !== st.owner || m.chat.type !== "private") return ok(); // чужое — молча и мимо очереди
+    if (!m || m.from?.id !== st.owner || m.chat.type !== "private") return ok(); // strangers: silently, not queued
     const to = {
       method: "sendMessage",
       chat_id: m.chat.id,
@@ -86,15 +86,15 @@ export class Relay {
     const text = (m.text ?? "").trim();
     if (STATUS.test(text)) return json({ ...to, text: st.summary ? `Mac спит ${st.since}. ${st.summary}` : `Mac спит ${st.since}, сводки перед сном нет.` });
     if (DECISION.test(text)) return json({ ...to, text: "Решения — только кнопкой, когда Mac проснётся." });
-    // повтор доставки того же апдейта ложится на то же место; ответ повторяем — прошлый Telegram не получил
+    // a redelivered update lands in the same slot; reply again, since Telegram didn't get the last reply
     await this.ctx.storage.put(QUEUE + String(u.update_id).padStart(12, "0"), u);
-    if (m.media_group_id && m.media_group_id === st.group) return ok(); // альбом — один ответ на все части
+    if (m.media_group_id && m.media_group_id === st.group) return ok(); // one reply per album
     if (m.media_group_id !== st.group) await this.save({ ...st, group: m.media_group_id });
     const n = (await this.ctx.storage.list({ prefix: QUEUE })).size;
     return json({ ...to, text: n > 1 ? `Запомнил — в очереди ${n}. Начну, когда Mac проснётся.` : `Mac спит ${st.since}. Запомнил — начну, когда проснётся.` });
   }
 
-  // Подпись Mac: Ed25519 над «путь\nвремя\nтело», время свежее (±60 с). Что время растёт, сверяет fetch по состоянию.
+  // The Mac's signature: Ed25519 over "path\ntime\nbody" with a fresh time (±60 s); fetch checks that time increases
   private async signed(path: string, ts: number, sig: string, body: string): Promise<boolean> {
     if (!this.env.MAC_KEY || !(Math.abs(Date.now() - ts) <= 60_000)) return false;
     try {
@@ -118,11 +118,12 @@ const json = (o: unknown) => new Response(JSON.stringify(o), { headers: { "conte
 const ok = () => new Response(null, { status: 200 });
 const none = () => new Response(null, { status: 404 });
 
-// Ящик подключения нового Mac (образец протокола — test/mock-relay.ts, шифр — src/box.ts). Конверт кладёт менеджер, забирает
-// Mac: внутри шифр на ключ этого Mac и подпись менеджера — ни токенов, ни имён, ни номеров. Имя ящика — хеш ключа Mac.
-//   POST /v1/box/{id}          — положить конверт (JSON до 8 КБ, в ящике до 8 конвертов) → 201
-//   GET  /v1/box/{id}?wait=25  — {messages: [...]}: сразу, если есть, иначе ждём до wait секунд
-// Ящик стирается целиком через 15 минут после первого конверта.
+// The connection mailbox for a new Mac (crypto in src/box.ts; test/mock-relay.ts mimics it). The manager puts an envelope
+// in, the Mac takes it out: ciphertext for that Mac's key plus the manager's signature, no tokens, names or ids in the
+// clear. The box id is a hash of the Mac's key.
+//   POST /v1/box/{id}          put an envelope (JSON up to 8 KB, up to 8 per box) → 201
+//   GET  /v1/box/{id}?wait=25  {messages: [...]} right away if any, else after waiting up to wait seconds
+// The whole box is erased 15 minutes after the first envelope.
 const BOX_TTL = 15 * 60_000;
 type BoxStorage = { get<T>(key: string): Promise<T | undefined>; put(key: string, value: unknown): Promise<void>; deleteAll(): Promise<void>; setAlarm(at: number): Promise<void> };
 type Letter = { at: number; m: unknown };

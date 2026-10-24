@@ -1,9 +1,8 @@
-// Узнать сессию по слову владельца. Заготовленных ответов хоста здесь нет: разговор ведёт архитектор,
-// живой, в режиме чат-бота.
+// Matching the owner's word to a session or site name.
 import { config } from "./config";
 
-// Слово владельца — часть имени сессии: само слово, его основа («маяка» → «Маяк») или псевдоним из настроек («астар» → A*).
-// Кириллическая «А» в «А*» — как латинская: владелец набирает имя с русской раскладки.
+// The word fits a part of the name, its stem ("маяка" → "Маяк") or a site alias from the settings.
+// A Cyrillic "А" before "*" counts as Latin: "А*" typed on a Russian keyboard is "A*".
 export function fits(w: string, name: string): boolean {
   const lat = (x: string) => x.replace(/а(?=\*)/gi, "a");
   const site = config.sites.find((s) => s.name === name) as { aliases?: string[] } | undefined;

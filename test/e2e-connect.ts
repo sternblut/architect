@@ -1,10 +1,10 @@
-// Живой прогон «любой человек подключает свой Mac» — локально, без настоящего Telegram и без настоящих ботов:
-//   незнакомец пишет в общий бот → инструкция → ставит коннектор (настоящий install.sh во временную папку вместо $HOME)
-//   → QR → сопряжение → личный бот создан → токен доставлен зашифрованным → мастер настройки → «что у нас» → снятие.
-// Подставные: Telegram Bot API (test/mock-telegram.ts), ящик и раздача (test/mock-relay.ts), claude и gh (заглушки в PATH).
-// Связку ключей, launchd, ~/.claude владельца и его бота не трогает. Итог — переписка в transcript.json.
-//   bun test/e2e-connect.ts [папка-для-transcript]
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+// Live run of "anyone connects their Mac", locally, without real Telegram or bots: a stranger writes to the shared bot
+//   → instructions → installs the connector (the real install.sh into a temp folder instead of $HOME) → QR code →
+//   pairing → a personal bot is created → its token arrives encrypted → setup → "what's up" → uninstall.
+// Mocks: Telegram Bot API (test/mock-telegram.ts), box and distribution (test/mock-relay.ts), claude and gh (stubs on PATH).
+// Leaves the Keychain, launchd, the owner's ~/.claude and their bot alone. The chats end up in transcript.json.
+//   bun test/e2e-connect.ts [transcript folder]
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MockRelay } from "./mock-relay";
@@ -13,14 +13,14 @@ import { MockTelegram, type ChatEvent } from "./mock-telegram";
 const REPO = dirname(import.meta.dir);
 const OUT = process.argv[2] ?? join(tmpdir(), "archi-e2e-transcript");
 const ROOT = mkdtempSync(join(tmpdir(), "archi-e2e-"));
-const HOME = join(ROOT, "home"); // «домашняя папка» человека
+const HOME = join(ROOT, "home"); // the person's home folder
 const APP = join(HOME, ".archi", "app");
 const STUBS = join(ROOT, "bin");
-const MSTATE = join(ROOT, "manager-state"); // состояние хоста-менеджера (вместо state владельца)
+const MSTATE = join(ROOT, "manager-state"); // the manager host's state, instead of the owner's
 const DIST = join(ROOT, "dist");
 for (const d of [HOME, STUBS, MSTATE, DIST, ...["Desktop", "Documents", "Developer", "Projects"].map((x) => join(HOME, x))]) mkdirSync(d, { recursive: true });
 
-// Терминал для установщика: псевдотерминал (как у Терминала macOS), ввод — из этого процесса. script(1) с сокетом Bun не работает.
+// A pseudo-terminal for the installer, as in macOS Terminal, with input from this process (script(1) fails with a Bun socket)
 const PTY = `import os, pty, select, sys
 pid, fd = pty.fork()
 if pid == 0:
@@ -45,11 +45,11 @@ sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean) => {
   results.push([name, ok]);
-  console.log(`${ok ? "  да " : "  НЕТ"}  ${name}`);
+  console.log(`${ok ? "  ok " : " FAIL"}  ${name}`);
 };
 const step = (s: string) => console.log(`\n— ${s}`);
 
-// Заглушки: «Claude Code человека» со входом и gh со входом olga-t. Агентов нет, SDK-протокола нет — архитектор не нужен для прогона.
+// Stubs: the person's Claude Code, signed in, and gh signed in as olga-t. No agents or SDK protocol: the run needs no architect.
 writeFileSync(
   join(STUBS, "claude"),
   `#!/bin/sh
@@ -74,7 +74,7 @@ esac
 for (const f of ["claude", "gh"]) chmodSync(join(STUBS, f), 0o755);
 
 const person = { id: 5550001, is_bot: false, first_name: "Ольга", last_name: "Тестова", username: "olga_t" };
-const OWNER = 111111; // владелец общего бота
+const OWNER = 111111; // the shared bot's owner
 const tg = new MockTelegram(person);
 const shared = tg.addBot("sapfirarchitect_bot", "Архитектор", { id: 8000000001, canManage: true });
 const relay = new MockRelay(DIST);
@@ -87,20 +87,20 @@ const freePort = () => {
 };
 const personEnv = {
   HOME,
-  PATH: [STUBS, join(HOME, ".local", "bin"), dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"), // ~/.local/bin в PATH, как после установщика Claude Code
+  PATH: [STUBS, join(HOME, ".local", "bin"), dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"), // ~/.local/bin on PATH, as after the Claude Code installer
   LANG: "ru_RU.UTF-8",
   TERM: "xterm-256color",
-  ARCH_STATE_DIR: join(APP, "state"), // секреты — файлами во временной папке, связка ключей не трогается
+  ARCH_STATE_DIR: join(APP, "state"), // secrets as files in the temp folder; the Keychain is untouched
   ARCH_LOGS_DIR: join(APP, "logs"),
-  ARCH_USER_SETTINGS: join(HOME, ".claude", "settings.json"), // общий хук — в настройки «человека», не владельца
+  ARCH_USER_SETTINGS: join(HOME, ".claude", "settings.json"), // the shared hook goes into the person's settings
   ARCH_TG_API: tg.url,
   ARCH_HOOK_PORT: String(freePort()),
   ARCHI_NO_LAUNCHCTL: "1",
-  BUN_INSTALL_CACHE_DIR: cache, // зависимости — из кэша Bun, без сети
+  BUN_INSTALL_CACHE_DIR: cache, // dependencies from the Bun cache, no network
 };
 
-// ── хост-менеджер: общий бот владельца, в этом процессе, со своим временным состоянием ─────────────────────────
-// настройки владельца общего бота — как в тестах (config.json в репозитории — только образец)
+// ── the manager host: the shared bot, in this process, with its own temp state ───
+// the shared bot owner's settings, as in the tests (the repo's config.json is only a template)
 const mconf = JSON.parse(readFileSync(join(REPO, "test", "config.json"), "utf8"));
 writeFileSync(join(ROOT, "manager-config.json"), JSON.stringify({ ...mconf, connect: { relay: relay.url, dist: relay.url } }));
 Object.assign(process.env, { ARCH_STATE_DIR: MSTATE, ARCH_LOGS_DIR: MSTATE, ARCH_CONFIG: join(ROOT, "manager-config.json"), ARCH_TG_API: tg.url });
@@ -109,7 +109,7 @@ ensureDirs();
 writeFileSync(join(MSTATE, "owner.json"), JSON.stringify({ id: OWNER, name: "Иван" }));
 const { Telegram } = await import("../src/telegram");
 const { Guest, buildDist } = await import("../src/guest");
-const dist = await buildDist(DIST, "sapfirarchitect_bot");
+await buildDist(DIST, "sapfirarchitect_bot");
 const mtg = new Telegram(shared.token);
 const guest = new Guest(mtg.bot.api, () => ({ username: mtg.username, canManage: mtg.canManageBots }));
 mtg.onGuest((ctx) => guest.handle(ctx));
@@ -127,7 +127,7 @@ let installer: ReturnType<typeof Bun.spawn> | undefined;
 const hasText = (s: string) => (t: string) => t.includes(s);
 
 try {
-  step("Незнакомка пишет в общий бот");
+  step("A stranger writes to the shared bot");
   frame("sapfirarchitect_bot", "01-общий-бот-до-начала", { empty: true });
   tg.say("sapfirarchitect_bot", "/start");
   await tg.waitFor("sapfirarchitect_bot", hasText("три минуты"));
@@ -140,23 +140,23 @@ try {
   tg.press("sapfirarchitect_bot", "Что видит этот бот");
   await tg.waitFor("sapfirarchitect_bot", hasText("Управлять вашим Mac он не может"));
   frame("sapfirarchitect_bot", "04-общий-бот-что-видит");
-  check("в команде установки нет ни токенов, ни ключей", command === `curl -fsSL ${relay.url}/i | sh`);
+  check("the install command holds no tokens or keys", command === `curl -fsSL ${relay.url}/i | sh`);
 
-  // посторонний пишет туда же — до архитектора владельца не доходит
+  // an outsider writes there too, and it never reaches the owner's architect
   tg.say("sapfirarchitect_bot", "покажи сессии владельца", { id: 777, is_bot: false, first_name: "Посторонний" });
 
-  step("На Mac: команда из Telegram, вставленная в Терминал (настоящий install.sh, временная папка вместо $HOME)");
+  step("On the Mac: the command from Telegram pasted into Terminal (the real install.sh, a temp folder for $HOME)");
   term.push(`olga@MacBook ~ % ${command}`);
   installer = Bun.spawn(["/usr/bin/python3", "-c", PTY, "/bin/sh", "-c", command], { env: personEnv, cwd: HOME, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let raw = "";
   const reader = (async () => {
-    const dec = new TextDecoder(); // потоком: трёхбайтовые полублоки QR не рвутся на границе кусков
+    const dec = new TextDecoder(); // streaming decode keeps the three-byte QR half blocks whole across chunks
     for await (const chunk of installer!.stdout as ReadableStream<Uint8Array>) raw += dec.decode(chunk, { stream: true });
   })();
   const waitOut = async (re: RegExp, ms = 60_000) => {
     const until = Date.now() + ms;
     while (!re.test(raw)) {
-      if (Date.now() > until) throw new Error(`установщик не вывел ${re}; вывод:\n${raw}`);
+      if (Date.now() > until) throw new Error(`the installer didn't print ${re}; output:\n${raw}`);
       await Bun.sleep(100);
     }
     return raw.match(re)!;
@@ -165,15 +165,15 @@ try {
   const screenCode = (await waitOut(/Код для Telegram: (?:\x1b\[1m)?(\d{4})/))[1];
   await waitOut(/Жду Telegram/);
   const keys = installer.stdin as import("bun").FileSink;
-  keys.write("\n"); // Enter, нажатый заранее, пока ждали Telegram, — согласием не считается
+  keys.write("\n"); // an Enter pressed while waiting for Telegram is no consent
   await keys.flush();
-  const lines = () => raw.replace(/\r/g, "").replace(/\n$/, "").split("\n"); // последний перевод строки — это начало следующей строки
+  const lines = () => raw.replace(/\r/g, "").replace(/\n$/, "").split("\n"); // the last newline starts the next line
   term.push(...lines());
   tframe("05-mac-qr");
   const qrRows = term.filter((l) => /[▀▄█]/.test(l)).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "").length);
-  check("QR в Терминале цельный: строки одной ширины, без битых знаков", qrRows.length >= 15 && new Set(qrRows).size === 1 && !term.some((l) => l.includes("\uFFFD")));
+  check("the QR code in Terminal is intact: rows of equal width, no broken characters", qrRows.length >= 15 && new Set(qrRows).size === 1 && !term.some((l) => l.includes("\uFFFD")));
 
-  step("Камера iPhone на QR → общий бот: Mac на связи, код с экрана Mac");
+  step("iPhone camera on the QR code → shared bot: the Mac checks in, then the code from its screen");
   tg.say("sapfirarchitect_bot", `/start ${link[1]}`);
   await tg.waitFor("sapfirarchitect_bot", hasText("Введите код"));
   frame("sapfirarchitect_bot", "06-общий-бот-код");
@@ -182,17 +182,17 @@ try {
   frame("sapfirarchitect_bot", "07-общий-бот-код-верный");
   frame("sapfirarchitect_bot", "08-telegram-создание-бота", { overlay: { kind: "sheet-create-bot", name: "Архитектор", username: "olga_t_arch_bot", manager: "sapfirarchitect_bot" } });
 
-  step("«Создать моего бота» → Telegram создаёт личного бота, менеджер запечатывает его ключ на ключ Mac");
+  step("Create my bot → Telegram creates the personal bot, the manager seals its token to the Mac's key");
   const personal = tg.pressKeyboard("sapfirarchitect_bot", "Создать моего бота")!;
   await tg.waitFor("sapfirarchitect_bot", hasText("создан"));
   frame("sapfirarchitect_bot", "09-общий-бот-бот-создан");
-  check("личный бот закрыт для всех, кроме создателя", personal.restricted === true);
-  check("в ящике только шифр: токена открытым текстом нет", relay.bodies.length === 1 && !relay.bodies.some((b) => b.includes(personal.token.split(":")[1])));
+  check("the personal bot is closed to everyone but its creator", personal.restricted === true);
+  check("the box holds only ciphertext, no token in the clear", relay.bodies.length === 1 && !relay.bodies.some((b) => b.includes(personal.token.split(":")[1])));
 
-  step("Терминал: чей это Telegram — «да»");
+  step("Terminal: whose Telegram it is, then yes");
   await waitOut(/Напишите «да» и нажмите Enter/);
   await Bun.sleep(300);
-  check("ранний Enter подключение не подтвердил", installer.exitCode === null && !/Подключено/.test(raw));
+  check("an early Enter didn't confirm the connection", installer.exitCode === null && !/Подключено/.test(raw));
   keys.write("да\n");
   await keys.flush();
   const code = await Promise.race([installer.exited, Bun.sleep(90_000).then(() => -1)]);
@@ -200,14 +200,14 @@ try {
   term.length = 1;
   term.push(...lines(), "olga@MacBook ~ % ");
   tframe("10-mac-подключено");
-  check("установщик закончил без ошибок", code === 0 && /Подключено/.test(raw));
-  check("токен на Mac — в хранилище секретов, в выводе Терминала его нет", readFileSync(join(APP, "state", "archi-telegram.secret"), "utf8") === personal.token && !raw.includes(personal.token));
-  check("владелец личного бота — Ольга", JSON.parse(readFileSync(join(APP, "state", "owner.json"), "utf8")).id === person.id);
+  check("the installer finished without errors", code === 0 && /Подключено/.test(raw));
+  check("the token is in the Mac's secret store and not in the Terminal output", readFileSync(join(APP, "state", "archi-telegram.secret"), "utf8") === personal.token && !raw.includes(personal.token));
+  check("Olga owns the personal bot", JSON.parse(readFileSync(join(APP, "state", "owner.json"), "utf8")).id === person.id);
   const plist = join(HOME, "Library", "LaunchAgents", "app.archi.host.plist");
-  check("служба launchd записана и корректна", existsSync(plist) && Bun.spawnSync(["plutil", "-lint", plist]).exitCode === 0);
-  check("общий хук стоит в ~/.claude/settings.json человека", readFileSync(join(HOME, ".claude", "settings.json"), "utf8").includes(join(APP, "src", "anyhook.ts")));
+  check("the launchd service is written and valid", existsSync(plist) && Bun.spawnSync(["plutil", "-lint", plist]).exitCode === 0);
+  check("the shared hook is in the person's ~/.claude/settings.json", readFileSync(join(HOME, ".claude", "settings.json"), "utf8").includes(join(APP, "src", "anyhook.ts")));
 
-  step("Личный хост Ольги: свой бот, свой вход в Claude, свой Mac");
+  step("Olga's own host: her bot, her Claude sign-in, her Mac");
   host = Bun.spawn([process.execPath, join(APP, "src", "main.ts")], { env: personEnv, cwd: APP, stdout: "ignore", stderr: "ignore" });
   for (let i = 0; i < 100 && !personal.description; i++) await Bun.sleep(100);
   frame("olga_t_arch_bot", "11-личный-бот-до-начала", { empty: true });
@@ -227,40 +227,40 @@ try {
   frame("olga_t_arch_bot", "15-мастер-github");
   tg.press("olga_t_arch_bot", "Да");
   await tg.waitFor("olga_t_arch_bot", hasText("Настроено"));
-  await Bun.sleep(1500); // «Пульт» появляется с первым кругом наблюдателя
+  await Bun.sleep(1500); // the dashboard appears with the watcher's first pass
   frame("olga_t_arch_bot", "16-настроено");
-  // ответы мастера — в своих настройках Mac (config.local.json) поверх config.json установщика
+  // setup answers go to config.local.json, over the installer's config.json
   const cfg = { ...JSON.parse(readFileSync(join(APP, "config.json"), "utf8")), ...JSON.parse(readFileSync(join(APP, "config.local.json"), "utf8")) };
-  check("мастер записал папки, сайты и GitHub", cfg.setupDone === true && cfg.roots[0] === "~/Developer" && cfg.sites.length === 2 && cfg.githubOwner === "olga-t" && cfg.repos[0] === "portfolio");
+  check("setup recorded folders, sites and GitHub", cfg.setupDone === true && cfg.roots[0] === "~/Developer" && cfg.sites.length === 2 && cfg.githubOwner === "olga-t" && cfg.repos[0] === "portfolio");
 
-  step("Первый вопрос");
+  step("First question");
   tg.say("olga_t_arch_bot", "что у нас");
-  // claude здесь — заглушка, архитектор не поднимется: хост должен честно сказать это и ответить сводкой
-  await tg.waitFor("olga_t_arch_bot", hasText("запускается"), 40_000); // «не» с неразрывным пробелом — типограф
+  // claude is a stub, so the architect won't start: the host must say so and answer with the overview
+  await tg.waitFor("olga_t_arch_bot", hasText("запускается"), 40_000); // the typographer puts a no-break space after "не"
   frame("olga_t_arch_bot", "17-что-у-нас");
-  check("«что у нас» получил ответ", true);
+  check("what's up got an answer", true);
 
-  step("Изоляция и следы");
-  check("сообщения незнакомцев не дошли до хоста владельца", ownerGot.length === 0);
+  step("Isolation and traces");
+  check("strangers' messages never reached the owner's host", ownerGot.length === 0);
   tg.say("sapfirarchitect_bot", "что у нас", { id: OWNER, is_bot: false, first_name: "Иван" });
   for (let i = 0; i < 40 && !ownerGot.length; i++) await Bun.sleep(50);
-  check("владелец общего бота по-прежнему слышен своему хосту", ownerGot[0] === "что у нас");
+  check("the shared bot's owner still reaches their host", ownerGot[0] === "что у нас");
   const files = (dir: string): string[] => readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)]));
   const secretTail = personal.token.split(":")[1];
   const leaks = [...files(MSTATE), ...files(join(APP, "logs"))].filter((f) => readFileSync(f, "utf8").includes(secretTail));
-  check("токена нет ни в состоянии и журнале менеджера, ни в журналах хоста Ольги", leaks.length === 0);
-  check("менеджер хранит о незнакомке только номер и имя её бота", !readFileSync(join(MSTATE, "guests.json"), "utf8").includes("Тестова"));
+  check("the token is in neither the manager's state and logs nor Olga's host logs", leaks.length === 0);
+  check("the manager keeps only the stranger's id and her bot's name", !readFileSync(join(MSTATE, "guests.json"), "utf8").includes("Тестова"));
 
-  step("Снятие одной командой: archi uninstall");
+  step("Removal in one command: archi uninstall");
   host.kill("SIGTERM");
   await host.exited;
   host = undefined;
   const un = Bun.spawnSync([join(HOME, ".local", "bin", "archi"), "uninstall"], { env: personEnv, stdout: "pipe", stderr: "pipe" });
   const settings = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"));
-  check("uninstall: код, секреты, служба, команда archi и общий хук сняты", un.exitCode === 0 && !existsSync(join(HOME, ".archi")) && !existsSync(plist) && !existsSync(join(HOME, ".local", "bin", "archi")) && !settings.hooks);
+  check("uninstall removes the code, secrets, service, archi command and shared hook", un.exitCode === 0 && !existsSync(join(HOME, ".archi")) && !existsSync(plist) && !existsSync(join(HOME, ".local", "bin", "archi")) && !settings.hooks);
 } catch (e) {
-  console.error(`\nСБОЙ: ${e instanceof Error ? e.message : e}`);
-  results.push(["прогон дошёл до конца", false]);
+  console.error(`\nFAILED: ${e instanceof Error ? e.message : e}`);
+  results.push(["the run reached the end", false]);
 } finally {
   host?.kill("SIGKILL");
   installer?.kill("SIGKILL");
@@ -279,10 +279,10 @@ const transcript = {
   frames,
 };
 mkdirSync(OUT, { recursive: true });
-// В переписке адрес раздачи — будущий, а не 127.0.0.1 подставного сервера (больше ничего не меняется).
+// The transcript shows a public distribution URL instead of the mock server's 127.0.0.1; nothing else changes
 const SHOW = process.env.ARCHI_SHOW_DIST ?? "https://archi.example.com";
 writeFileSync(join(OUT, "transcript.json"), JSON.stringify(transcript, null, 1).replaceAll(relay.url, SHOW));
 const bad = results.filter(([, ok]) => !ok);
-console.log(`\n${results.length - bad.length} из ${results.length} проверок прошли. Переписка: ${join(OUT, "transcript.json")}. Временная папка: ${ROOT}`);
+console.log(`\n${results.length - bad.length} of ${results.length} checks passed. Transcript: ${join(OUT, "transcript.json")}. Temp folder: ${ROOT}`);
 if (!bad.length) rmSync(ROOT, { recursive: true, force: true });
 process.exit(bad.length ? 1 : 0);

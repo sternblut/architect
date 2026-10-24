@@ -1,6 +1,6 @@
-// Мастер настройки в личном боте: какие папки ведём, есть ли сайты, следить ли за GitHub. Три вопроса кнопками.
-// Работает только на установке из установщика (config.setupDone задан): по итогу пишет config.local.json и запускает архитектора.
-// /setup — пройти заново. У установки владельца (без setupDone) мастера нет вовсе.
+// The setup questions in the bot: which folders, which sites, whether to follow GitHub; three questions with buttons.
+// They run while config.setupDone is false (the template's value), then write config.local.json and start the architect.
+// /setup runs them again. A config without setupDone has no setup at all.
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILE, HOME, STATE, config, tr } from "./config";
@@ -11,7 +11,7 @@ const FILE = join(STATE, "setup.json");
 type St = { step: "folders" | "sites" | "sites-wait" | "github" | "done"; cands: string[]; roots: string[]; sites: { name: string; url: string; repo?: string }[]; msgId?: number; gh?: string; ghText?: string };
 const fresh = (): St => ({ step: "folders", cands: [], roots: [], sites: [] });
 
-// Где обычно лежат проекты; плюс папки, где уже работал Claude Code.
+// Where projects usually live, plus the folders Claude Code has worked in
 const USUAL = ["Desktop", "Documents", "Developer", "Projects", "Code", "code", "src", "dev", "work", "repos", "GitHub", "Sites"];
 const RU: Record<string, string> = { Desktop: "Рабочий стол", Documents: "Документы", Downloads: "Загрузки" };
 const label = (rel: string) => tr(RU[rel] ?? rel, rel);
@@ -28,7 +28,7 @@ export function folderCandidates(home = HOME): string[] {
   return [...out].filter((d) => d && !d.startsWith(".") && d !== "Library" && existsSync(join(home, d)) && statSync(join(home, d)).isDirectory()).slice(0, 6);
 }
 
-// «example.com\nhttps://shop.example.com/ru» → сайты; мусор пропускается.
+// "example.com\nhttps://shop.example.com/ru" → sites; anything else is skipped
 export function parseSites(text: string): { name: string; url: string }[] {
   const out: { name: string; url: string }[] = [];
   for (const raw of text.split(/[\s,]+/)) {
@@ -43,8 +43,8 @@ export function parseSites(text: string): { name: string; url: string }[] {
   return out.slice(0, 10);
 }
 
-// Снимок после выкладки — только у сайта, связанного с репозиторием: связь — та, что уже была (/setup её не стирает),
-// иначе по адресу сайта, записанному в самом репозитории на GitHub
+// Deploy screenshots need a site linked to its repo: keep an existing link (/setup doesn't erase it), else match the
+// homepage URL set on the GitHub repo
 export function linkRepos<S extends { url: string; repo?: string }>(sites: S[], repos: { name: string; homepageUrl?: string }[], known: { url: string; repo?: string }[]): S[] {
   const host = (u: string) => u.replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "").toLowerCase();
   return sites.map((s) => {
@@ -67,12 +67,12 @@ export class Setup {
     return config.setupDone === false;
   }
 
-  // Своя установка (из установщика) — можно пройти мастер заново; у владельца — нет.
+  // /setup works whenever the config has setupDone
   get restartable() {
     return config.setupDone !== undefined;
   }
 
-  // Перед первым «Начать» человек видит описание бота.
+  // The bot description, seen before the first "Start"
   async describe() {
     await this.tg.bot.api.setMyDescription(tr("Ваш архитектор на Mac: ведёт сессии Claude Code в ваших папках. Отвечает только вам.", "Your architect on the Mac: runs Claude Code sessions in your folders. Answers only you.")).catch(() => {});
     await this.tg.bot.api.setMyShortDescription(tr("Ваш архитектор на Mac. Отвечает только вам.", "Your architect on the Mac. Answers only you.")).catch(() => {});
@@ -186,7 +186,7 @@ export class Setup {
     }
     this.st.sites = linkRepos(this.st.sites, list, config.sites);
     const roots = this.st.roots.map((r) => (r === "~" ? "~" : `~/${r}`));
-    // свои настройки (config.local.json) — атомарно: что в нём уже было, плюс ответы мастера
+    // config.local.json, written atomically: what it had plus the answers
     const raw = existsSync(CONFIG_FILE) ? JSON.parse(readFileSync(CONFIG_FILE, "utf8")) : {};
     Object.assign(raw, { roots, sites: this.st.sites, githubOwner: github ?? "", repos, setupDone: true });
     const tmp = `${CONFIG_FILE}.${process.pid}.tmp`;
@@ -196,7 +196,7 @@ export class Setup {
     this.st.step = "done";
     this.save();
     log("setup", "настройка закончена", { roots, sites: this.st.sites.length, repos: repos.length });
-    this.done(); // архитектор и наблюдатель — сразу, даже если сообщение ниже не уйдёт
+    this.done(); // start the architect and the watcher even if the message below fails
     await this.tg.send(
       `${prefix}${tr(
         "Настроено. Пишите задачу обычными словами.\n\nВверху чата будет пульт: кто ждёт вас и кто работает. Короткая сводка — «что у нас».",

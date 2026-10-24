@@ -1,5 +1,5 @@
-// Дежурный в облаке без сети и без Cloudflare: код Worker (relay/src/index.ts) работает в процессе, хранилище Durable Object — Map;
-// хост — настоящие Relay и Telegram с подменённым Bot API. Проверяется своя логика, атак нет.
+// The cloud relay without network or Cloudflare: the Worker code (relay/src/index.ts) runs in process with a Map as the
+// Durable Object storage; the host side is the real Relay and Telegram with a fake Bot API. Logic tests, not attacks.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,7 +68,7 @@ const press = (from: number, data: string) => ({
 });
 const post = (url: string, u: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(u) });
 
-describe("дежурный в облаке (Worker)", () => {
+describe("cloud relay (Worker)", () => {
   async function asleep() {
     const c = makeCloud();
     const path = "p".repeat(43);
@@ -78,14 +78,14 @@ describe("дежурный в облаке (Worker)", () => {
     return { ...c, path, hook };
   }
 
-  test("пока Mac не уснул, путь не принимается", async () => {
+  test("rejects the path until the Mac sleeps", async () => {
     const { cloud, queued } = makeCloud();
     const r = await cloud.fetch(new Request("http://relay/u/" + "p".repeat(43), { method: "POST", body: JSON.stringify(msg(OWNER, "привет")) }));
     expect(r.status).toBe(404);
     expect(queued()).toBe(0);
   });
 
-  test("без подписи, чужой подписью, несвежим или повторным временем — 401", async () => {
+  test("401 without a signature, with another key, a stale time or a repeated one", async () => {
     const { cloud } = makeCloud();
     const other = await newKeys();
     expect((await cloud.fetch(new Request("http://relay/pull", { method: "POST", body: "{}" }))).status).toBe(401);
@@ -93,15 +93,15 @@ describe("дежурный в облаке (Worker)", () => {
     expect((await cloud.fetch(await signedReq("/pull", {}, { ts: Date.now() - 120_000 }))).status).toBe(401);
     const ts = Date.now();
     expect((await cloud.fetch(await signedReq("/pull", {}, { ts }))).status).toBe(200);
-    expect((await cloud.fetch(await signedReq("/pull", {}, { ts }))).status).toBe(401); // тот же запрос второй раз
-    // подпись привязана к пути: подписанный /pull не годится как /sleep (свежий Worker — отказ только из-за пути)
+    expect((await cloud.fetch(await signedReq("/pull", {}, { ts }))).status).toBe(401); // the same request again
+    // the signature covers the path: a signed /pull doesn't pass as /sleep (a fresh Worker, so only the path fails)
     const swapped = await signedReq("/pull", { pathHash: "x" });
     const fresh = makeCloud();
     expect((await fresh.cloud.fetch(new Request("http://relay/sleep", { method: "POST", headers: swapped.headers, body: await swapped.text() }))).status).toBe(401);
     expect((await fresh.cloud.fetch(new Request("http://relay/pull", { method: "POST", headers: swapped.headers, body: '{"pathHash":"x"}' }))).status).toBe(200);
   });
 
-  test("Mac спит: владельцу — ответ телом webhook, задача — в очередь; чужой путь — 404", async () => {
+  test("Mac asleep: the owner gets a reply in the webhook body and the task is queued; a wrong path gets 404", async () => {
     const { hook, queued } = await asleep();
     expect((await hook(msg(OWNER, "почини маяк"), "q".repeat(43))).status).toBe(404);
     const r = await json(hook(msg(OWNER, "почини маяк")));
@@ -111,7 +111,7 @@ describe("дежурный в облаке (Worker)", () => {
     expect(queued()).toBe(2);
   });
 
-  test("сводка — из снимка и мимо очереди; кнопка — всплывашка и мимо очереди; чужие — молча", async () => {
+  test("the summary comes from the snapshot, a tap gets a toast, neither is queued; strangers get silence", async () => {
     const { hook, queued } = await asleep();
     const s = await json(hook(msg(OWNER, "что у нас?")));
     expect(s.text).toBe("Mac спит с 14:05. Сводка на 14:03:\n\nСессии — живых 2");
@@ -125,7 +125,7 @@ describe("дежурный в облаке (Worker)", () => {
     expect(queued()).toBe(0);
   });
 
-  test("повтор доставки: очередь та же, ответ повторён; альбом — один ответ", async () => {
+  test("a redelivery keeps the queue and repeats the reply; an album gets one reply", async () => {
     const { hook, queued } = await asleep();
     const u = msg(OWNER, "почини маяк");
     const a = await json(hook(u));
@@ -137,11 +137,11 @@ describe("дежурный в облаке (Worker)", () => {
     expect(queued()).toBe(3);
   });
 
-  test("pull: очередь по порядку, ack удаляет; после pull путь и сводка забыты", async () => {
+  test("pull returns the queue in order and ack deletes it; after pull the path and summary are forgotten", async () => {
     const { cloud, hook, storage, queued } = await asleep();
     const first = msg(OWNER, "раз");
     const second = msg(OWNER, "два");
-    await hook(second); // Telegram может прислать не по порядку — очередь всё равно по update_id
+    await hook(second); // Telegram may deliver out of order; the queue follows update_id
     await hook(first);
     const p1 = await json(cloud.fetch(await signedReq("/pull", { ack: 0 })));
     expect(p1.updates.map((u: any) => u.message.text)).toEqual(["раз", "два"]);
@@ -153,12 +153,12 @@ describe("дежурный в облаке (Worker)", () => {
   });
 });
 
-describe("хост: передача бота дежурному и возврат", () => {
+describe("host: handing the bot to the relay and back", () => {
   type Call = { method: string; payload: any; at: number };
 
   function makeHost() {
     const c = makeCloud();
-    const down = { sleep: 0 }; // сколько раз подряд /sleep не дойдёт (нет сети)
+    const down = { sleep: 0 }; // how many /sleep calls in a row fail (no network)
     const server = Bun.serve({ port: 0, fetch: (req) => (new URL(req.url).pathname === "/sleep" && down.sleep-- > 0 ? new Response(null, { status: 503 }) : c.cloud.fetch(req)) });
     const url = `http://127.0.0.1:${server.port}`;
     const tg = new Telegram("123456:TEST_TOKEN_TEST_TOKEN_TEST_TOKEN_TEST");
@@ -176,11 +176,11 @@ describe("хост: передача бота дежурному и возвра
       calls.push({ method, payload, at: performance.now() });
       if (method === "setWebhook") webhook = payload.url;
       if (method === "deleteWebhook") {
-        await wait(10, signal as AbortSignal | undefined); // как сеть: остановка опроса может оборвать запрос на лету
+        await wait(10, signal as AbortSignal | undefined); // like a network: stopping the poll can abort it mid-flight
         webhook = "";
       }
       if (method === "getUpdates") {
-        if (payload.limit === 1) return { ok: true, result: [] } as any; // stop() подтверждает принятое
+        if (payload.limit === 1) return { ok: true, result: [] } as any; // stop() confirms what was received
         if (webhook) return { ok: false, error_code: 409, description: "Conflict: can't use getUpdates method while webhook is active" } as any;
         await wait(30, signal as AbortSignal | undefined);
         return { ok: true, result: polled.splice(0) } as any;
@@ -200,7 +200,7 @@ describe("хост: передача бота дежурному и возвра
   }
   const queue = (h: { storage: { put(k: string, v: unknown): Promise<void> } }, u: { update_id: number }) => h.storage.put("u:" + String(u.update_id).padStart(12, "0"), u);
 
-  test("засыпание: опрос стоп, потом webhook на новый случайный путь; путь — не в журнале", async () => {
+  test("sleep: polling stops, then a webhook on a new random path, which is never logged", async () => {
     const h = makeHost();
     h.tg.poll();
     await Bun.sleep(80);
@@ -212,16 +212,16 @@ describe("хост: передача бота дежурному и возвра
     const path = set.payload.url.slice(`${h.url}/u/`.length);
     expect(path).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(h.storage.m.get("state")).toMatchObject({ asleep: true, pathHash: await (async () => Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path))).toString("hex"))(), owner: OWNER });
-    // без разметки и значков; звёздочки в имени папки — как есть, а не жирное
+    // no markup or emoji; asterisks in a folder name stay as they are
     expect((h.storage.m.get("state") as any).summary).toBe("Сводка на 14:03:\n\nСессии — живых 2\nЖдут вас: «Экраны», каталог****\n\nMac — нагрузка 2,2");
     expect(readFileSync(join(LOGS, "host.log"), "utf8")).not.toContain(path);
     await h.relay.wake();
     await h.relay.sleep();
-    expect(h.calls.filter((c) => c.method === "setWebhook")[1].payload.url).not.toBe(set.payload.url); // на каждый сон — новый путь
+    expect(h.calls.filter((c) => c.method === "setWebhook")[1].payload.url).not.toBe(set.payload.url); // a new path for every sleep
     await h.stop();
   });
 
-  test("пробуждение: webhook снят до опроса, очередь — по порядку и по разу, потом снова опрос", async () => {
+  test("wake: the webhook goes before polling, the queue arrives in order and once, then polling resumes", async () => {
     const h = makeHost();
     h.tg.poll();
     await Bun.sleep(80);
@@ -230,7 +230,7 @@ describe("хост: передача бота дежурному и возвра
     expect((await h.deliver(task1)).text).toMatch(/^Mac спит с \d\d:\d\d\. Запомнил — начну, когда проснётся\.$/);
     expect((await h.deliver(msg(OWNER, "что у нас?"))).text).toContain("Сводка на 14:03");
     expect((await h.deliver(msg(OWNER, "и сними арену"))).text).toBe("Запомнил — в очереди 2. Начну, когда Mac проснётся.");
-    expect(h.got).toEqual([]); // пока Mac спит, до хоста ничего не доходит
+    expect(h.got).toEqual([]); // nothing reaches the host while the Mac sleeps
     await h.relay.wake();
     await Bun.sleep(80);
     expect(h.got.map((g) => [g.text, g.relayed])).toEqual([
@@ -242,7 +242,7 @@ describe("хост: передача бота дежурному и возвра
     expect(resumed.length).toBeGreaterThan(0);
     expect(del.at).toBeLessThan(h.got[0].at);
     expect(h.queued()).toBe(0);
-    // Telegram не узнал, что дежурный принял апдейт, и отдал его ещё раз опросу — второй раз не обрабатывается
+    // Telegram didn't learn that the relay took the update and gives it to polling again: it isn't handled twice
     h.polled.push(task1, msg(OWNER, "спасибо"));
     await Bun.sleep(150);
     expect(h.got.map((g) => g.text)).toEqual(["в маяке упал прогон — разберись", "и сними арену", "спасибо"]);
@@ -252,7 +252,7 @@ describe("хост: передача бота дежурному и возвра
     await h.stop();
   });
 
-  test("из облака не бывает решений — даже если Worker подменён", async () => {
+  test("no decisions come from the cloud, even from a tampered Worker", async () => {
     const h = makeHost();
     const approvals = new Approvals(h.tg);
     const seen: any[] = [];
@@ -261,10 +261,10 @@ describe("хост: передача бота дежурному и возвра
     await Bun.sleep(20);
     const code = JSON.parse(readFileSync(join(LOGS, "decisions.jsonl"), "utf8").trim().split("\n").pop()!).id as string;
     await h.relay.sleep();
-    // честный дежурный «да код» не копит и прямо говорит, что решения — кнопкой
+    // an honest relay doesn't queue "yes <id>" and says decisions take a button
     expect((await h.deliver(msg(OWNER, `да ${code}`))).text).toBe("Решения — только кнопкой, когда Mac проснётся.");
     expect(h.queued()).toBe(0);
-    // подменённый кладёт в очередь сам: «да код», нажатие, нажатие внутри апдейта с сообщением, мусор
+    // a tampered one queues "yes <id>", a tap, a tap inside a message update, and junk
     const said = msg(OWNER, `да ${code}`);
     const tapped = press(OWNER, `a:${code}:y`);
     const both = { ...msg(OWNER, "привет"), callback_query: press(OWNER, `a:${code}:y`).callback_query };
@@ -278,11 +278,11 @@ describe("хост: передача бота дежурному и возвра
     ]);
     expect(approvals.takeText(seen[0])).toBe(false);
     expect(await decision).toBe("timeout");
-    expect(h.queued()).toBe(0); // мусор не застрял в очереди
+    expect(h.queued()).toBe(0); // junk doesn't get stuck in the queue
     await h.stop();
   });
 
-  test("ответ на вопрос, написанный во сне, доходит до вопроса", async () => {
+  test("an answer to a question written during sleep reaches the question", async () => {
     const h = makeHost();
     const approvals = new Approvals(h.tg);
     h.tg.onIncoming((m) => void approvals.takeText(m));
@@ -290,20 +290,20 @@ describe("хост: передача бота дежурному и возвра
     await Bun.sleep(20);
     const asked = h.tg.lastId;
     await h.relay.sleep();
-    await h.deliver(msg(OWNER, "feature/relay", { reply_to_message: { message_id: asked, date: 0, chat: { id: OWNER, type: "private" }, text: "Какую ветку?" } })); // свой вариант — ответом на вопрос
+    await h.deliver(msg(OWNER, "feature/relay", { reply_to_message: { message_id: asked, date: 0, chat: { id: OWNER, type: "private" }, text: "Какую ветку?" } })); // a free-form answer as a reply to the question
     await h.relay.wake();
     expect(await answer).toEqual({ "Какую ветку?": "feature/relay" });
     await h.stop();
   });
 
-  test("своя остановка опроса посреди его запуска — не сбой: хост не выходит", async () => {
+  test("stopping the poll while it starts is not a failure: the host doesn't exit", async () => {
     const h = makeHost();
     const exit = process.exit;
     let exits = 0;
     process.exit = (() => void exits++) as typeof process.exit;
     try {
       h.tg.poll();
-      await h.tg.stop(); // bot.start() ещё снимает webhook — остановка обрывает его
+      await h.tg.stop(); // bot.start() is still removing the webhook, and the stop aborts it
       await Bun.sleep(50);
       expect(exits).toBe(0);
     } finally {
@@ -312,7 +312,7 @@ describe("хост: передача бота дежурному и возвра
     }
   });
 
-  test("передача не удалась (нет сети) — на следующем «засыпаю» повторяется", async () => {
+  test("a failed handoff (no network) is retried at the next sleep", async () => {
     const h = makeHost();
     h.down.sleep = 1;
     await h.relay.sleep();
@@ -323,7 +323,7 @@ describe("хост: передача бота дежурному и возвра
     await h.stop();
   });
 
-  test("не сопряжён — бот не передаётся, опрос не останавливается", async () => {
+  test("not paired: the bot isn't handed over and polling continues", async () => {
     const h = makeHost();
     rmSync(join(STATE, "owner.json"));
     try {
@@ -338,7 +338,7 @@ describe("хост: передача бота дежурному и возвра
     }
   });
 
-  test("попросили проснуться и сразу уснуть — побеждает последнее", async () => {
+  test("wake followed at once by sleep: the last request wins", async () => {
     const h = makeHost();
     await h.relay.sleep();
     const wake = h.relay.wake();

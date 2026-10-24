@@ -1,5 +1,5 @@
-// Суждения о сессиях при кончившемся лимите Claude ждут его сброса: иначе круг каждые 2 минуты поднимает Claude
-// на каждую сессию и получает отказ, до 60 раз в час.
+// With the Claude limit out, session judgments wait for the reset instead of calling Claude for every session every
+// two minutes only to be refused.
 import { expect, mock, test } from "bun:test";
 import type { AgentRow } from "../src/sessions";
 
@@ -18,7 +18,7 @@ const { refresh, judgeNow } = await import("../src/understand");
 
 const row = (id: string) => ({ sessionId: id, pid: 1, cwd: "/nonexistent", status: "idle", kind: "background" }) as unknown as AgentRow;
 
-test("кончился лимит — суждения ждут его сброса: ни другие сессии, ни следующие круги, ни утренний итог Claude не поднимают", async () => {
+test("with the limit out no further session, pass or morning summary calls Claude until the reset", async () => {
   await refresh([row("a"), row("b")]);
   expect(calls).toBe(1);
   await refresh([row("a"), row("b")]);

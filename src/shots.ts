@@ -1,4 +1,4 @@
-// Снимки сайтов и доказательства к выкладке: «кандидат» (снимает сама рабочая сессия) и «стало» (снимает хост после выкладки).
+// Page screenshots: the host shoots the live site after a deploy; worker sessions leave their own candidate shots.
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ARCH_HOME, HOME, SHOTS } from "./config";
@@ -21,7 +21,7 @@ export async function shoot(url: string, device: "iphone" | "macbook" | "monitor
   }
 }
 
-// Снимки кандидата, которые рабочая сессия положила в $CLAUDE_JOB_DIR/tmp/evidence за последние 2 часа.
+// Candidate shots the worker saved to $CLAUDE_JOB_DIR/tmp/evidence in the last 2 hours
 export function candidateShots(jobId?: string): string[] {
   if (!jobId) return [];
   const dir = join(HOME, ".claude", "jobs", jobId, "tmp", "evidence");
