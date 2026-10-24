@@ -29,6 +29,5 @@ Live checks against real Telegram and Claude Code are in `test/e2e-*.ts`.
 - `src/status.ts`, `src/morning.ts`: the dashboard and the 8:00 summary.
 - `bin/arch`: the `archi` command. `bin/install.sh`: the one-line installer.
 - `relay/`: the optional cloud relay for when the Mac sleeps.
-- `DECISIONS.md`: why things are the way they are (Russian).
 
 Security issues go to [SECURITY.md](SECURITY.md), not to public issues.

@@ -17,7 +17,7 @@ MAC_KEY = ""
 name = "RELAY"
 class_name = "Relay"
 
-# ящик подключения нового Mac: конверт менеджера на 15 минут, только шифр (DESIGN-V.md §4)
+# ящик подключения нового Mac: конверт менеджера на 15 минут, только шифр (src/box.ts)
 [[durable_objects.bindings]]
 name = "BOX"
 class_name = "Box"

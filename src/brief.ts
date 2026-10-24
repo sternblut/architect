@@ -116,7 +116,9 @@ async function project(path: string): Promise<Proj> {
   const m = url.match(/github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
   const site = m ? config.sites.find((s) => s.repo === m[2]) : undefined;
   const own = top && (top === ARCH_HOME || top.startsWith(ARCH_HOME + "/")) ? ARCH() : undefined;
-  return { name: site?.name ?? own ?? (m?.[2] ?? basename(top || at)), site, slug: m ? `${m[1]}/${m[2]}` : undefined, top: top || undefined };
+  const repo = m?.[2] ?? basename(top || at);
+  const prefix = config.repoPrefix?.toLowerCase();
+  return { name: site?.name ?? own ?? (prefix && repo.toLowerCase().startsWith(prefix) ? repo.slice(prefix.length) : repo), site, slug: m ? `${m[1]}/${m[2]}` : undefined, top: top || undefined };
 }
 const host = (s: Site) => s.url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 const shownFile = (p: string) => q(basename(p).replace(/\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|rb|go|swift)$/i, "")); // расширение кода — под «Подробнее»
@@ -636,7 +638,7 @@ const reasonEn = (reason: string) => {
 const human = (reason: string) => tr(HUMAN.find(([re]) => re.test(reason))?.[1] ?? reason, reasonEn(reason));
 const OBVIOUS = /^(удаление файлов|удаление ветки|git clean удаляет файлы без возврата)$/;
 
-const ctxFor = (cwd: string): PolicyContext => ({ cwd, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, keychainService: config.keychainService, branch: gitBranchSync });
+const ctxFor = (cwd: string): PolicyContext => ({ cwd, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync });
 
 // Главная команда цепочки — та, из-за которой шлагбаум спрашивает; её папка — с учётом cd и git -C.
 function pick(command: string, cwd: string): { t: string[]; cwd: string; v: Verdict } {

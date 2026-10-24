@@ -335,7 +335,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
 
       tool(
         "screenshot",
-        "Снять страницу сайта. device: iphone (WebKit 390×844), macbook (1470×870), monitor (2560×1440). Снимок — быстрый взгляд движком Playwright, не настоящий Safari на iPhone. send: false — только для своей проверки, владельцу не уходит (смотри его инструментом Read); по умолчанию снимок уходит владельцу.",
+        `Снять страницу сайта. device: iphone (WebKit 390×844), macbook (1470×870), monitor (${config.monitor?.width ?? 2560}×${config.monitor?.height ?? 1440}). Снимок — быстрый взгляд движком Playwright, не настоящий Safari на iPhone. send: false — только для своей проверки, владельцу не уходит (смотри его инструментом Read); по умолчанию снимок уходит владельцу.`,
         { url: z.string().url(), device: z.enum(["iphone", "macbook", "monitor"]).optional(), full_page: z.boolean().optional(), caption: z.string().optional(), send: z.boolean().optional() },
         async ({ url, device, full_page, caption, send }) => {
           const out = join(SHOTS, `${new Date().toISOString().replace(/[:.]/g, "-")}-${device ?? "iphone"}.png`);

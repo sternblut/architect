@@ -8,7 +8,7 @@ const [url, device = "iphone", out, full, keychain] = process.argv.slice(2);
 const D = {
   iphone: { engine: webkit, width: 390, height: 844, scale: 3, mobile: true },
   macbook: { engine: chromium, width: 1470, height: 870, scale: 2, mobile: false },
-  monitor: { engine: chromium, width: 2560, height: 1440, scale: 1, mobile: false },
+  monitor: { engine: chromium, width: config.monitor?.width ?? 2560, height: config.monitor?.height ?? 1440, scale: 1, mobile: false },
 }[device as "iphone" | "macbook" | "monitor"];
 if (!url || !out || !D) {
   console.error("bun src/shot-cli.ts <url> <iphone|macbook|monitor> <out.png> [full]");

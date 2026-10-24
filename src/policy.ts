@@ -10,6 +10,7 @@ export type PolicyContext = {
   cwd: string;
   archHome: string;
   hostingPattern: string;
+  spendPattern?: string;
   keychainService: string;
   branch?: (cwd: string) => string;
 };
@@ -551,6 +552,7 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
 
   // траты
   if (/rapidata.*\b(launch|order|create)\b/i.test(raw)) v = worst(v, ask("трата денег (Rapidata)"));
+  if (ctx.spendPattern && new RegExp(ctx.spendPattern, "i").test(raw)) v = worst(v, ask("трата денег"));
 
   // чужие сессии и процессы, сервис архитектора, машина
   if (cmd === "claude" && ["stop", "kill", "rm", "respawn", "purge"].includes(t[1] ?? "")) v = worst(v, ask(`claude ${t[1]} — вмешательство в сессии`));

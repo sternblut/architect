@@ -356,3 +356,12 @@ describe("встроенные команды git — не алиасы", () => 
     test(c, () => expect(d(c)).toBe("ok"));
   for (const c of ["git send-email 0001.patch", "git filter-branch --tree-filter x", "git yolo"]) test(`спрашиваем: ${c}`, () => expect(d(c)).toBe("ask"));
 });
+
+describe("свои платные команды владельца из настроек — как трата", () => {
+  test("совпала со spendPattern — спросить; без настройки — без вопроса", () => {
+    const own = { ...ctx(), spendPattern: String.raw`(pairs|make)_round\.py\b.*--launch` };
+    expect(classifyBash("python3 pairs_round.py --launch", own).decision).toBe("ask");
+    expect(classifyBash("python3 pairs_round.py --dry", own).decision).toBe("ok");
+    expect(d("python3 pairs_round.py --launch")).toBe("ok");
+  });
+});

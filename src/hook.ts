@@ -56,6 +56,7 @@ const verdict = classifyTool(input.tool_name, input.tool_input ?? {}, {
   cwd: input.cwd,
   archHome: ARCH_HOME,
   hostingPattern: config.hostingPattern,
+  spendPattern: config.spendPattern,
   keychainService: config.keychainService,
   branch: gitBranchSync,
 });

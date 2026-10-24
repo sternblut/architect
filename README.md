@@ -135,7 +135,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Docs
 
-The user guide ([docs/guide.ru.md](docs/guide.ru.md)) and the design notes ([DESIGN.md](DESIGN.md), [DECISIONS.md](DECISIONS.md)) are in Russian for now.
+The user guide ([docs/guide.ru.md](docs/guide.ru.md)) is in Russian for now.
 
 ## License
 
