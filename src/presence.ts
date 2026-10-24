@@ -1,5 +1,5 @@
-// Владелец за Mac? Судим по простою клавиатуры и мыши (HIDIdleTime): пока он за экраном, телефон не дёргаем тем, что он и так видит.
-// Вернулся к Mac — всё, что ждало его ответа в Telegram, отпускается обратно в терминал.
+// Is the owner at the Mac? Judged by keyboard and mouse idle time (HIDIdleTime). When they come back,
+// whatever waited for them in Telegram returns to the terminal.
 import { run } from "./util";
 
 let cache = { at: 0, idle: 0 };
@@ -15,7 +15,7 @@ export async function idleSeconds(): Promise<number> {
 export const AWAY_AFTER_S = 180;
 
 export async function ownerAway(): Promise<boolean> {
-  if (process.env.ARCH_FORCE_PRESENCE) return process.env.ARCH_FORCE_PRESENCE === "away"; // только для тестов
+  if (process.env.ARCH_FORCE_PRESENCE) return process.env.ARCH_FORCE_PRESENCE === "away"; // tests
   return (await idleSeconds()) >= AWAY_AFTER_S;
 }
 

@@ -1,7 +1,8 @@
-// Дежурный в облаке, пока Mac спит (Worker — relay/). Засыпая, хост останавливает опрос Telegram и ставит webhook на Worker
-// по новому случайному пути; проснувшись — снимает webhook, забирает очередь, отдаёт её grammY и снова опрашивает сам.
-// Секретов в облаке нет: путь живёт только в памяти хоста и в Telegram (у Worker — его SHA-256), запросы к Worker
-// подписаны ключом Mac (Ed25519, закрытый — в связке ключей). О сне и пробуждении говорит помощник src/powerwatch.swift.
+// The cloud relay for while the Mac sleeps (a Worker, relay/). Going to sleep, the host stops polling Telegram and
+// points a webhook at the Worker under a new random path; on wake it removes the webhook, takes the queue, feeds it to
+// grammY and polls again. The cloud holds no secrets: the path lives only in the host's memory and in Telegram (the
+// Worker keeps its SHA-256), and requests to the Worker are signed with this Mac's Ed25519 key from the Keychain.
+// src/powerwatch.swift reports sleep and wake.
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Update } from "grammy/types";
@@ -13,14 +14,14 @@ export const KEY_SERVICE = `${config.keychainService}-relay`;
 const b64u = (b: ArrayBuffer | Uint8Array) => Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b)).toString("base64url");
 const sha256 = async (s: string) => Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))).toString("hex");
 type Signal = Parameters<Telegram["bot"]["api"]["setWebhook"]>[2];
-const within = (ms: number) => AbortSignal.timeout(ms) as unknown as Signal; // у grammY свой тип AbortSignal (abort-controller)
+const within = (ms: number) => AbortSignal.timeout(ms) as unknown as Signal; // grammY has its own AbortSignal type
 
 type Mode = "awake" | "asleep";
 
 export class Relay {
-  private want: Mode = "awake"; // чего просили последним
-  private began: Mode = "awake"; // что начали делать последним (опрос идёт с запуска хоста)
-  private handed = false; // webhook на дежурного поставлен
+  private want: Mode = "awake"; // the last mode asked for
+  private began: Mode = "awake"; // the last mode started (polling runs from host start)
+  private handed = false; // the webhook points to the relay
   private chain: Promise<unknown> = Promise.resolve();
   private lastTs = 0;
   askedSleepAt = 0;
@@ -39,8 +40,8 @@ export class Relay {
     return this.go("awake");
   }
 
-  // Сон и пробуждение — по очереди; устаревшее (уже попросили обратное) не выполняется.
-  // Неудавшаяся передача (нет сети) повторяется на следующем «засыпаю».
+  // Sleep and wake run in order, skipping a request that was already reversed. A failed handoff (no network) is
+  // retried at the next sleep.
   private go(w: Mode) {
     this.want = w;
     if (w === "asleep") this.askedSleepAt = Date.now();
@@ -52,21 +53,22 @@ export class Relay {
       .catch((e) => log("relay", w === "asleep" ? "бот не передан дежурному" : "бот не вернулся на Mac", String(e))));
   }
 
-  // Засыпаю: опрос стоп (принятое подтверждается, новое ждёт в Telegram) → Worker получает хеш нового пути и сводку → webhook.
+  // Going to sleep: stop polling (received updates are confirmed, new ones wait in Telegram) → the Worker gets the new
+  // path's hash and the summary → webhook
   private async handoff() {
     const owner = this.d.tg.owner;
-    if (!owner) return; // не сопряжён — дежурному некому отвечать, бот спит вместе с Mac, как раньше
+    if (!owner) return; // not paired: nobody for the relay to answer
     this.began = "asleep";
     const t = Date.now();
     await Promise.race([this.d.tg.stop(), sleep(4000)]);
-    const path = b64u(crypto.getRandomValues(new Uint8Array(32))); // в журнал не пишется нигде: ошибки grammY адрес не содержат
+    const path = b64u(crypto.getRandomValues(new Uint8Array(32))); // never logged; grammY errors don't include the URL
     await this.signed("/sleep", { pathHash: await sha256(path), owner, since: since(Date.now()), summary: this.summary() });
     await this.d.tg.bot.api.setWebhook(`${this.d.url}/u/${path}`, { allowed_updates: ["message", "callback_query"], max_connections: 1 }, within(6000));
     this.handed = true;
     log("relay", `Mac засыпает — бот у дежурного (${Date.now() - t} мс)`);
   }
 
-  // Проснулся: webhook снять (иначе опрос получит 409; сеть после сна поднимается не сразу) → очередь → снова опрос.
+  // Awake: remove the webhook (or polling gets 409; the network may take a while after sleep) → the queue → polling
   private async takeBack() {
     this.began = "awake";
     this.handed = false;
@@ -82,14 +84,14 @@ export class Relay {
     }
     if (this.want !== "awake") return;
     await this.drain();
-    if (this.want !== "awake") return; // пока забирали очередь, Mac снова засыпает — опрос не начинать
+    if (this.want !== "awake") return; // the Mac went back to sleep meanwhile
     this.d.tg.poll();
     log("relay", `Mac проснулся — бот снова на Mac (${Date.now() - t} мс)`);
   }
 
-  // Очередь из облака — в обычную обработку grammY (квитанции update_id не дадут обработать дважды).
-  // Из облака берётся только сообщение — и только оно: апдейт пересобирается заново, так что нажатие кнопки,
-  // подложенное рядом с сообщением, до обработчиков не дойдёт. Пометка relayed: «да код» решением не станет.
+  // The relay's queue goes through normal grammY handling (update_id receipts prevent doubles). Only the message is
+  // taken and the update is rebuilt, so a button tap planted next to it never reaches the handlers. Marked relayed,
+  // a "yes <id>" can't become a decision.
   async drain() {
     let ack = 0;
     try {
@@ -117,8 +119,8 @@ export class Relay {
     }
   }
 
-  // Сводка для «что у нас» во сне: обычный текст без разметки и значков — Worker шлёт её как есть.
-  // Жирное снимается до экранирования: звёздочки в именах папок («каталог****») остаются звёздочками.
+  // The overview the Worker sends as is during sleep: plain text without markup or emoji. Bold goes before unescaping,
+  // so literal asterisks in names stay.
   private summary() {
     const s = this.d.summary();
     if (!s) return undefined;
@@ -140,21 +142,21 @@ export class Relay {
       body: text,
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) throw new Error(`дежурный ответил ${res.status}`);
+    if (!res.ok) throw new Error(`relay answered ${res.status}`);
     return res.json();
   }
 }
 
-// Полное пробуждение — с графикой (IOPMrootDomain «System Capabilities»: 1 процессор, 2 графика, 4 звук, 8 сеть).
-// Тёмное пробуждение (Power Nap, крышка закрыта) — без графики: бот остаётся у дежурного.
+// A full wake has graphics (IOPMrootDomain "System Capabilities": 1 CPU, 2 graphics, 4 audio, 8 network). A dark wake
+// (Power Nap, lid closed) has none, and the bot stays with the relay.
 export async function fullWake(): Promise<boolean> {
   const r = await run(["ioreg", "-r", "-c", "IOPMrootDomain", "-k", "System Capabilities", "-d", "1"], { timeoutMs: 5000 });
   const caps = Number(r.stdout.match(/"System Capabilities" = (\d+)/)?.[1]);
-  return !Number.isFinite(caps) || (caps & 2) !== 0; // не узнали — считаем, что проснулся: глухой бот хуже лишней передачи
+  return !Number.isFinite(caps) || (caps & 2) !== 0; // unknown counts as awake: a deaf bot is worse than an extra handover
 }
 
-// Помощник говорит «sleep N» и ждёт «ok N» (не дольше 20 с), «wake» — проснулся. Страховка: если бот у дежурного
-// больше минуты, а Mac бодр (сон не случился или «wake» потерялся) — забрать бота.
+// The helper prints "sleep N" and waits up to 20 s for "ok N"; "wake" means awake. Safeguard: if the relay has had the
+// bot for over a minute while the Mac is awake (the sleep didn't happen or "wake" was lost), take the bot back.
 export function watchPower(relay: Relay, cmd: string[]) {
   const p = Bun.spawn(cmd, { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
   (async () => {
@@ -181,7 +183,7 @@ export function watchPower(relay: Relay, cmd: string[]) {
   return p;
 }
 
-// Помощник собирается при первом запуске в state/ (swiftc из Command Line Tools).
+// The helper is built into state/ on first start (swiftc from the Command Line Tools)
 async function powerHelper(): Promise<string | undefined> {
   const src = join(import.meta.dir, "powerwatch.swift");
   const bin = join(STATE, "powerwatch");
@@ -191,8 +193,8 @@ async function powerHelper(): Promise<string | undefined> {
   log("relay", "помощник сна не собрался — бот во сне будет молчать", clip(r.stderr, 300));
 }
 
-// Включается, только если в config.json есть relay.url, а в связке ключей — ключ Mac (bun src/relay-key.ts).
-// Любой сбой здесь — только запись в журнал: хост работает как без дежурного.
+// Runs only with relay.url in the config and this Mac's key in the Keychain (bun src/relay-key.ts). Any failure here is
+// only logged, and the host works as it would without the relay.
 export async function startRelay(tg: Telegram, summary: () => string | undefined) {
   if (!config.relay?.url) return;
   try {
@@ -202,7 +204,7 @@ export async function startRelay(tg: Telegram, summary: () => string | undefined
     registerSecret(pkcs8);
     const key = await crypto.subtle.importKey("pkcs8", Buffer.from(pkcs8, "base64url"), "Ed25519", false, ["sign"]);
     const relay = new Relay({ tg, url: config.relay.url.replace(/\/+$/, ""), key, summary });
-    await relay.drain(); // хост мог упасть, пока бот был у дежурного: забрать, что накопилось
+    await relay.drain(); // the host may have died while the relay had the bot: take what piled up
     const bin = await powerHelper();
     if (bin) watchPower(relay, [bin]);
     log("relay", "дежурный в облаке подключён");

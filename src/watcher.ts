@@ -1,6 +1,6 @@
-// Наблюдатель: только читает и сообщает. Сам ничего не запускает и не меняет.
-// Свои сессии (запущенные архитектором) докладывают хуками; чужие — фоновые и терминальные — видны по `claude agents --json`
-// и журналам. Их ход владелец получает в Telegram, когда отошёл от Mac: всё, что ждёт его ответа, — сразу на iPhone.
+// The watcher goes over the sessions every 10 seconds. The architect's sessions report through hooks; the others,
+// background and Terminal ones, are seen through `claude agents --json` and their transcripts, and their questions go to
+// the architect while the owner is away. It also runs queued restarts, follows deploys and refreshes the dashboard.
 import { config, tr } from "./config";
 import { ownerAway } from "./presence";
 import { collect } from "./status";
@@ -16,19 +16,17 @@ import { API_ERROR } from "./hookserver";
 import { hhmm, log, run } from "./util";
 
 type Seen = { state?: string; status?: string; waitingFor?: string; since: number; alerted?: boolean; idleSince?: number; relayedText?: string };
-type Deploy = { repo: string; since: number; action: string; sessionId?: string; cwd?: string; settle?: (tail: string) => void }; // settle — подпись карты разрешения
+type Deploy = { repo: string; since: number; action: string; sessionId?: string; cwd?: string; settle?: (tail: string) => void }; // settle: the approval card's last line
 
 const looksLikeQuestion = (t: string) => /\?\s*$|\?\s*\n|[?？]\s*(\*\*)?\s*$/.test(t.trim().slice(-400)) || /жду (вашего|ваш|«)|скажите|выберите|подтвердите/i.test(t.slice(-400));
 
 export class Watcher {
   private seen = new Map<string, Seen>();
   private primed = false;
-  private flagSeen = new Set<string>();
-  private flagPushed = new Map<string, number>();
   private deploys: Deploy[] = [];
   private ticks = 0;
 
-  // limitWarning — прогноз недельного лимита; без него хост пишет владельцу сам
+  // limitWarning takes the weekly limit warning; without it the host sends it to the owner directly
   constructor(private d: { tg: Telegram; ui: SessionUI; board: Board; bunPath: string; isSelf: (sessionId?: string) => boolean; question?: (sessionId: string, cwd: string, text: string) => Promise<void>; limitWarning?: (md: string) => Promise<void> }) {}
 
   start() {
@@ -44,7 +42,7 @@ export class Watcher {
   }
 
   private lastTick = Date.now();
-  private quietUntil = 0; // после сна Mac сеть поднимается не сразу — минуту ничего не шлём
+  private quietUntil = 0; // after the Mac wakes the network needs a moment: send nothing for a minute
 
   private async tick() {
     const gap = Date.now() - this.lastTick;
@@ -59,7 +57,7 @@ export class Watcher {
     const away = await ownerAway();
     for (const r of rows) if (r.sessionId && (r.pid || r.state === "working" || r.state === "blocked")) await this.onRow(r, away);
     this.primed = true;
-    if (this.ticks % 30 === 0) await this.d.tg.refreshMe(); // темы могли включить в @BotFather
+    if (this.ticks % 30 === 0) await this.d.tg.refreshMe(); // topics may have been turned on in @BotFather
     if (this.ticks++ % 30 === 0) await this.flags();
     if (this.ticks % 3 === 0) await this.links();
     await this.restarts();
@@ -74,7 +72,7 @@ export class Watcher {
     const cur: Seen = same ? prev : { state: r.state, status: r.status, waitingFor: r.waitingFor, since: Date.now(), idleSince: prev?.idleSince, relayedText: prev?.relayedText };
     this.seen.set(id, cur);
     if (!this.primed) {
-      cur.relayedText = sessionDigest(r).lastText; // то, что было до запуска хоста, не пересылаем
+      cur.relayedText = sessionDigest(r).lastText; // nothing from before the host started
       return;
     }
     const ours = !!workers.get(id);
@@ -82,8 +80,8 @@ export class Watcher {
     const waitingDialog = r.waitingFor === "permission prompt" || r.waitingFor === "dialog open" || r.waitingFor === "sandbox request";
 
     if (ours) {
-      // итоги ходов и вопросы своих сессий приходят хуками; здесь — то, что хуки не ловят
-      if (!same && r.state === "failed") await this.d.ui.alert(id, r.cwd, "сессия упала. Откройте «Ход» или скажите архитектору, что делать.");
+      // turns and questions come through hooks; this covers what hooks miss
+      if (!same && r.state === "failed") await this.d.ui.alert(id, r.cwd, "сессия упала. Откройте «Последние шаги» или скажите архитектору, что делать.");
       if (waitingDialog && !cur.alerted && Date.now() - cur.since > 120_000) {
         cur.alerted = true;
         await this.d.ui.alert(id, r.cwd, "ждёт решения в окне, а кнопка сюда не пришла (хост перезапускался?). Скажите архитектору «повтори запрос» — он разбудит сессию заново.");
@@ -91,7 +89,7 @@ export class Watcher {
       return;
     }
 
-    // чужие сессии: фоновые и в терминале. Если у сессии работает общий хук, её ход и вопросы приходят им — журнал не дублируем.
+    // other sessions, background and Terminal: with the shared hook, turns and questions come through it instead
     if (this.d.ui.isHooked(id)) return;
     if (busy) {
       cur.idleSince = undefined;
@@ -100,14 +98,14 @@ export class Watcher {
     cur.idleSince ??= Date.now();
     const d = sessionDigest(r);
     const text = (d.lastText ?? "").trim();
-    if (waitingDialog) return; // окно в чужой сессии отсюда не нажать — оно видно в «Пульте», отдельным сообщением не зовём
-    // ход закончен: отчёты не пересылаем (тишина по умолчанию); настоящий вопрос — архитектору, он решит, тревожить ли владельца
+    if (waitingDialog) return; // can't be answered from here; it shows on the dashboard
+    // turn ended: reports are not forwarded; a real question goes to the architect, which decides whether to tell the owner
     if (!text || text === cur.relayedText || Date.now() - cur.idleSince < 20_000 || !away) return;
     cur.relayedText = text;
     if (looksLikeQuestion(text) && !API_ERROR.test(text)) await this.d.question?.(id, r.cwd, text);
   }
 
-  // Отложенное: сессия закончила ход — перезапускаем или передаём ей сообщение владельца, и одной строкой говорим ему.
+  // Queued restarts and messages: once the session ends its turn, do it and tell the owner in one line
   private async restarts() {
     const pending = pendingRestarts.all();
     if (!Object.keys(pending).length) return;
@@ -131,9 +129,8 @@ export class Watcher {
     }
   }
 
-  // Новые страницы для просмотра — владельцу сразу, одним сообщением на сессию (ночью без звука). Страница названа своим
-  // заголовком, кнопка ведёт на неё. Первый круг только запоминает. Ночью, пока он спит, — не откладываем: утренний
-  // итог и так покажет их кнопками, а отложенные легли бы туда ещё и строками.
+  // New preview pages go to the owner right away, one message per session, a button per page. The first passes only
+  // record them. At night they are skipped, not held: the morning summary shows them as buttons anyway.
   private async links() {
     const rows = await listAgents(true);
     for (const f of freshLinks(rows)) {
@@ -145,20 +142,13 @@ export class Watcher {
   private async flags() {
     const o = await collect(true);
     this.d.board.overview = o;
-    // флаг пишем один раз, когда появился; пока держится — он в «Пульте». Ключ без чисел: «лимит 97%» и «98%» — один флаг
-    const key = (f: string) => f.replace(/\d+(?:[.,]\d+)?/g, "#");
-    // мигающий флаг (сайт то отвечает, то нет) повторяем не чаще раза в 6 часов
-    const fresh = o.flags.filter((f) => !f.startsWith("Сессия ") && !this.flagSeen.has(key(f)) && Date.now() - (this.flagPushed.get(key(f)) ?? 0) > 6 * 3600_000);
-    this.flagSeen = new Set(o.flags.map(key));
-    if (this.ticks > 1) for (const f of fresh) this.flagPushed.set(key(f), Date.now());
-    // флаги — только в «Пульте»: отдельные сообщения со звуком мешали; учёт выше оставлен, чтобы вернуть их с человеческим текстом
-    void fresh;
-    // кроме лимита Claude: кончится раньше сброса — встанет вся работа. Решает архитектор: он знает, решил ли владелец уже
+    // Flags show only on the dashboard, except the weekly limit: running out before the reset stops all work.
+    // The architect decides what to say, since it knows whether the owner has already dealt with it.
     const warn = weekWarning(o.limits);
     if (warn && this.ticks > 1) await (this.d.limitWarning ? this.d.limitWarning(warn) : this.d.tg.send(warn, { silent: false }));
   }
 
-  // Владелец разрешил push в main / слияние / запуск выкладки → ждём конвейер и показываем новую версию.
+  // The owner allowed a push, merge or deploy run: wait for the pipeline and show the new version
   async onApproved(action: string, cwd: string, sessionId?: string, settle?: (tail: string) => void) {
     if (!/git\b.*\bpush\b|gh\s+pr\s+merge|gh\s+workflow\s+run|gh\s+run\s+rerun/.test(action)) return settle?.("");
     const explicit = action.match(/(?:-R|--repo)[\s=]+([\w.-]+\/[\w.-]+)/)?.[1];
@@ -177,7 +167,7 @@ export class Watcher {
       const r = await run(["gh", "run", "list", "-R", dep.repo, "--limit", "8", "--json", "databaseId,workflowName,status,conclusion,createdAt,url,headBranch,displayTitle"], { timeoutMs: 40_000 });
       const runs = (r.code === 0 ? JSON.parse(r.stdout || "[]") : []) as { workflowName: string; status: string; conclusion: string; createdAt: string; url: string; headBranch: string; displayTitle: string }[];
       const mine = runs.filter((x) => Date.parse(x.createdAt) >= dep.since);
-      // владельцу — имя сайта, а не репозитория («acme/beacon» ему ничего не говорит), и без значков
+      // the site's name rather than the repo ("acme/beacon" means nothing to the owner)
       const sites = config.sites.filter((s) => s.repo === dep.repo.split("/")[1]);
       const who = sites.map((s) => s.name).join(", ") || dep.repo.split("/")[1];
       const say = (md: string) => (dep.sessionId && dep.cwd ? this.d.ui.post(dep.sessionId, dep.cwd, md) : this.d.tg.send(`${who} — ${md}`)).then(() => {});
@@ -200,8 +190,8 @@ export class Watcher {
         await say(tr(`выкладка не прошла. Почему — на GitHub, кнопкой ниже\n${bad[0].url}`, `the deploy failed. The reason is on GitHub, button below\n${bad[0].url}`));
         continue;
       }
-      // снимок и есть весть о выкладке: подпись — что случилось, картинка — каким сайт стал. Раньше шло два сообщения:
-      // «✅ Выложено: acme/beacon…» и следом снимок. Со звуком — он ждёт итога выкладки, которую разрешил.
+      // The screenshot is the deploy report: the caption says what happened, the picture shows the site now.
+      // With sound, since the owner is waiting for the deploy they allowed.
       if (!sites.length) await say(tr("выкладка прошла", "the deploy went through"));
       for (const site of sites) {
         const shot = await shoot(site.url, "iphone", site.keychain);
@@ -218,7 +208,7 @@ export class Watcher {
   }
 }
 
-// «Регламенты — новая страница для просмотра: «Выбор названий»»; несколько — числом, названия на кнопках
+// "Docs — new preview page: “Naming”"; several pages as a count, with the titles on the buttons
 export function linksMd(name: string, pages: Link[]): string {
   const n = pages.length;
   if (n === 1) return tr(`${name} — новая страница для просмотра${pages[0].title ? `: «${pages[0].title}»` : ""}`, `${name} — new preview page${pages[0].title ? `: “${pages[0].title}”` : ""}`);

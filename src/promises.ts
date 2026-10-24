@@ -1,17 +1,17 @@
-// Обещания архитектора владельцу («проверю и пришлю») — записи у хоста со сроком: иначе после сброса лимита, обрыва
-// связи и /new обещанное теряется. Запись живёт у хоста: переживает и перезапуск, и новую сессию архитектора.
+// The architect's promises to the owner ("I'll check and send it"). The host keeps them with a due time, so they
+// survive a restart, a usage limit and /new.
 import { join } from "node:path";
 import { STATE } from "./config";
 import { readJson, writeJson } from "./util";
 
 export type Promised = {
   id: string;
-  what: string; // что обещал, его словами
+  what: string; // in the architect's words
   given: number;
-  due: number; // время напоминания; с session — крайний срок
-  session?: string; // напомнить, когда эта сессия закончит ход
+  due: number; // reminder time; with session, the deadline
+  session?: string; // remind when this session ends its turn
   name?: string;
-  told?: boolean; // владельцу уже сказано, что выполнить пока не могу
+  told?: boolean; // the owner already knows it is postponed
 };
 
 const FILE = join(STATE, "promises.json");
@@ -26,14 +26,13 @@ export const promises = {
     save();
     return x;
   },
-  // сессия закончила ход — её обещания пора выполнить
   takeForSession(sessionId: string): Promised[] {
     return take((p) => p.session === sessionId);
   },
   takeDue(now = Date.now()): Promised[] {
     return take((p) => p.due <= now);
   },
-  // выполнить пока некому (лимит, вход в Claude) — вернутся к сроку
+  // Nobody can act on them now (usage limit, Claude signed out): they return at `due`
   postpone(ps: Promised[], due: number) {
     all.push(...ps.map((p) => ({ ...p, due, told: true })));
     save();
@@ -49,7 +48,7 @@ function take(f: (p: Promised) => boolean): Promised[] {
   return out;
 }
 
-// «09:30» — ближайшие 09:30 по часам Mac: сегодня, если ещё не наступило, иначе завтра
+// "09:30" → the next 09:30 local time: today if still ahead, otherwise tomorrow
 export function nextAt(hm: string, now = Date.now()): number {
   const [h, m] = hm.split(":").map(Number);
   const d = new Date(now);

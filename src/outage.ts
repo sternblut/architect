@@ -1,12 +1,11 @@
-// Что сказать владельцу, когда связь вернулась: бот молчал, его вопросы дошли пачкой, а о том, что стояли и сессии,
-// без отчёта он узнает, только придя к Mac.
+// The report once the connection is back: how long the Mac was cut off, which sessions were stuck, which won't resume.
 import { tr } from "./config";
 import { listAgents, readTail, transcriptPath } from "./sessions";
 import { displayName } from "./ui";
 
 const NB = String.fromCharCode(0xa0);
-// минуты отбрасываем, как Telegram у времени сообщения: с округлением отчёт в 22:05 сказал бы «Mac спал … до 22:06»
-const hm = (t: number) => new Date(t).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }); // по часам Mac, не московским
+// Mac local time with the seconds dropped, as Telegram shows it: rounding would put a 22:05 report "until 22:06"
+const hm = (t: number) => new Date(t).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 const FAILED = /API Error|Can't reach the API|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/;
 
 export async function outageReport(from: number, to: number, why: "dns" | "telegram" | "sleep", tail = 400_000): Promise<string> {
@@ -23,11 +22,11 @@ export async function outageReport(from: number, to: number, why: "dns" | "teleg
     if (!during.length) continue;
     const name = displayName(r.sessionId, r.cwd, rows);
     stood.push(name);
-    // цель сама не продолжит: «Goal paused after 3 automatic retries · send a message to continue», и после него ничего не было
+    // a goal that gave up ("Goal paused after 3 automatic retries · send a message to continue") won't resume by itself
     const last = entries.filter((e) => e.type === "assistant" || e.type === "system").at(-1);
     if (/Goal paused/i.test(JSON.stringify((last as { content?: unknown })?.content ?? ""))) paused.push(name);
   }
-  // Mac спал: стояла вся работа на нём — так и сказать, без выдуманных причин и без «ни я, ни сессии»
+  // the Mac slept, so all work on it stopped: say just that
   const span = tr(`с${NB}${hm(from)} до${NB}${hm(to)}`, `from${NB}${hm(from)} to${NB}${hm(to)}`);
   if (why === "sleep")
     return tr(

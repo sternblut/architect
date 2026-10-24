@@ -1,16 +1,16 @@
-// Markdown ответа Claude → Telegram. Основной путь — rich-сообщения (Bot API 10.1+): Markdown рисует сам Telegram,
-// здесь только экранируем то, что он прочтёт иначе. Запасной путь — HTML старого вида (b, i, s, code, pre, a, blockquote).
+// Claude's Markdown for Telegram. Rich messages (Bot API 10.1+) render Markdown in Telegram, so richSafe() only escapes
+// what Telegram would read differently. mdToHtml() is the fallback to classic HTML (b, i, s, code, pre, a, blockquote).
 import { esc } from "./util";
 
 const LIMIT = 3900;
 
-// Теги, которые Rich Markdown понимает как разметку; любой другой «<» показываем как есть.
+// Tags Rich Markdown treats as markup; any other "<" is shown as is
 const KNOWN_TAG = /^<\/?(b|strong|i|em|u|ins|s|strike|del|code|mark|sub|sup|tg-[a-z-]+|a|br|details|summary|blockquote|p|pre|ul|ol|li|table|tr|td|th|caption|h[1-6]|footer|hr|aside|cite|figure|figcaption|img|video|audio|input)(\s|>|\/)/i;
 
-// Строка, с которой начинается свой блок Markdown: перед ней жёсткий перенос не нужен.
+// A line that starts its own Markdown block, so the line before it needs no hard break
 const BLOCK = /^\s*([-*+]\s|\d+[.)]\s|>|#|\||```|~~~|<\/?(details|summary|blockquote|table|tr|td|th|ul|ol|li|pre|p)\b)/i;
 
-// Текст вне кода и ссылок: Telegram не держит правила CommonMark — «A* … A*» у него курсив, «a_b» тоже.
+// Text outside code and links. Telegram doesn't follow CommonMark here: "A* … A*" and "a_b" turn italic.
 const plain = (seg: string) =>
   seg
     .replace(/(?<!\\)\$/g, () => "\\$")
@@ -18,22 +18,22 @@ const plain = (seg: string) =>
     .replace(/(?<=[A-Za-z0-9])(?<![*\\])\*(?![*\p{L}\p{N}])/gu, "\\*")
     .replace(/(?<=[\p{L}\p{N}])(?<!\\)_(?=[\p{L}\p{N}])/gu, "\\_");
 
-// Обычная строка текста: не начало блока и без отступа (отступ — продолжение пункта списка или код).
+// A plain text line: not a block start and not indented (an indent continues a list item or is code)
 const prose = (s: string) => !!s.trim() && !BLOCK.test(s) && !/^\s/.test(s);
 
-// Markdown Claude → Rich Markdown Telegram: «$» не формула, незнакомый «<» не тег, незакрытый блок кода закрыт,
-// перенос строки остаётся переносом (одиночный «\n» Telegram склеивает в абзац),
-// пустая строка между абзацами текста остаётся пустой строкой: Telegram для iOS рисует абзацы вплотную.
+// Claude's Markdown → Telegram Rich Markdown: "$" is not math, an unknown "<" is not a tag, an open code block is closed,
+// a single "\n" stays a line break (Telegram would join the lines), and a blank line between paragraphs stays visible
+// (Telegram for iOS draws paragraphs with no gap).
 export function richSafe(md: string): string {
   const out: string[] = [];
-  // «<details><summary>…</summary>» открывает HTML-блок до пустой строки: без неё строки внутри слипаются и Markdown не разбирается
+  // "<details><summary>…</summary>" opens an HTML block that ends at a blank line; without one the lines inside run together unparsed
   const lines = md
     .replace(/<\/summary>[ \t]*\n?(?=[ \t]*\S)/gi, "</summary>\n\n")
     .replace(/(?<=\S)[ \t]*\n?[ \t]*<\/details>/gi, "\n\n</details>")
     .split("\n");
-  const SPACER = "\u00a0  "; // неразрывный пробел и жёсткий перенос: строка без текста, но для Markdown не пустая
+  const SPACER = "\u00a0  "; // no-break space and a hard break: a line with no text that Markdown doesn't treat as blank
   let fence = false;
-  let proseBlock = false; // текущий абзац начался с обычной строки текста
+  let proseBlock = false; // the current paragraph started with a plain text line
   lines.forEach((line, k) => {
     if (/^\s*(```|~~~)/.test(line)) {
       fence = !fence;
@@ -46,10 +46,10 @@ export function richSafe(md: string): string {
       return;
     }
     if (!line.trim()) {
-      if (out.at(-1) === SPACER) return; // несколько пустых строк подряд — одна
+      if (out.at(-1) === SPACER) return; // collapse repeated blank lines
       const next = lines.slice(k + 1).find((l) => l.trim());
       if (proseBlock && next !== undefined && prose(next)) {
-        // между двумя абзацами текста — видимая пустая строка (неразрывный пробел) внутри одного абзаца
+        // between two text paragraphs: a visible empty line within one paragraph
         if (!/( {2}|\\)$/.test(out[out.length - 1])) out[out.length - 1] += "  ";
         out.push(SPACER);
         return;
@@ -72,7 +72,7 @@ export function richSafe(md: string): string {
   return out.join("\n");
 }
 
-// Произвольный текст (имя, путь, слова сессии) внутри Markdown — без случайной разметки.
+// Escapes arbitrary text (a name, a path, a session's words) for use inside Markdown
 export const mdEsc = (s: string) => s.replace(/([\\`*_\[\]~|<>$=#])/g, "\\$1");
 const unEsc = (s: string) => s.replace(/\\([\\`*_\[\]~|<>$=#])/g, "$1");
 
@@ -127,7 +127,7 @@ export function mdToHtml(md: string): string {
     }
     flushQuote();
     if (/^\s*\|.*\|\s*$/.test(line)) {
-      // таблицы Telegram не умеет — строки «ячейка — ячейка»
+      // Telegram HTML has no tables: rows become "cell — cell"
       const rows: string[][] = [];
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
         if (!/^\s*\|?\s*:?-{2,}/.test(lines[i])) rows.push(tableRow(lines[i]));
@@ -157,7 +157,7 @@ export function stripMd(md: string): string {
     .replace(/^#{1,6}\s+/gm, "");
 }
 
-// Режет длинный markdown на части не длиннее лимита Telegram, не разрывая блоки кода.
+// Splits long Markdown into Telegram-sized parts, avoiding splits inside code blocks
 export function splitMd(md: string, limit = LIMIT): string[] {
   if (md.length <= limit) return [md];
   const parts: string[] = [];

@@ -1,4 +1,4 @@
-// Telegram-слой без сети: настоящий класс Telegram, подменённый транспорт Bot API, апдейты подаются вручную.
+// The Telegram layer without network: the real Telegram class with a fake Bot API transport and hand-fed updates.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,7 +29,7 @@ function makeTg(opts: { failRich?: boolean; failDraftMarkdown?: boolean } = {}) 
     if (method.startsWith("send")) return { ok: true, result: method.endsWith("Draft") ? true : { message_id: ++n, date: 0, chat: { id: OWNER, type: "private" } } } as any;
     return { ok: true, result: true } as any;
   });
-  // владелец «не спит»: здесь проверяется вид сообщений, а не ночная тишина — иначе с 0:00 до 8:00 тесты падали
+  // the owner is "awake": these tests check messages, not quiet hours, and would fail between 0:00 and 8:00
   tg.lastOwnerAt = Date.now();
   return { tg, calls };
 }
@@ -44,48 +44,47 @@ const press = (from: number, data: string) => ({
   callback_query: { id: String(uid), from: { id: from, is_bot: false, first_name: "X" }, chat_instance: "1", data, message: { message_id: 5, date: 0, chat: { id: from, type: "private" } } },
 });
 
-describe("сопряжение", () => {
+describe("pairing", () => {
   beforeEach(() => {
     rmSync(join(STATE, "owner.json"), { force: true });
     rmSync(join(STATE, "pair.json"), { force: true });
   });
 
-  test("верный код по ссылке /start делает отправителя владельцем", async () => {
+  test("a correct code via /start makes the sender the owner", async () => {
     const { tg } = makeTg();
     const code = createPairCode();
     await tg.bot.handleUpdate(msg(OWNER, `/start ${code}`) as any);
     expect(ownerId()).toBe(OWNER);
   });
 
-  test("без кода, с неверным кодом и после 5 попыток владелец не назначается", async () => {
+  test("no owner without a code, with a wrong one, or after 5 tries", async () => {
     const { tg } = makeTg();
     const code = createPairCode();
     await tg.bot.handleUpdate(msg(STRANGER, "/start") as any);
     for (let i = 0; i < 5; i++) await tg.bot.handleUpdate(msg(STRANGER, String((Number(code) + 1 + i) % 1000000).padStart(6, "1")) as any);
     expect(ownerId()).toBeUndefined();
-    await tg.bot.handleUpdate(msg(STRANGER, code) as any); // верный код после исчерпания попыток не принимается
+    await tg.bot.handleUpdate(msg(STRANGER, code) as any); // the right code after the tries are used up
     expect(ownerId()).toBeUndefined();
   });
 
-  // guide обещал «привязать заново — archi pair», а после первой привязки код с другого аккаунта отбрасывался
-  test("привязать заново: верный код с нового аккаунта; прежний узнаёт; без кода чужим — тишина", async () => {
+  test("re-pairing: a correct code from a new account, the previous one is told, strangers without a code get silence", async () => {
     const { tg, calls } = makeTg();
     await tg.bot.handleUpdate(msg(OWNER, `/start ${createPairCode()}`) as any);
     expect(ownerId()).toBe(OWNER);
-    await tg.bot.handleUpdate(msg(STRANGER, "привет") as any); // окна привязки нет — тишина
+    await tg.bot.handleUpdate(msg(STRANGER, "привет") as any); // no code open: silence
     const code = createPairCode();
-    await tg.bot.handleUpdate(msg(STRANGER, "что у нас") as any); // окно открыто, но не код — тишина, без подсказки чужому
+    await tg.bot.handleUpdate(msg(STRANGER, "что у нас") as any); // a code is open but this isn't one: silence, no hint
     expect(calls.filter((c) => c.method.startsWith("send") && c.payload.chat_id === STRANGER).length).toBe(0);
-    await tg.bot.handleUpdate(msg(STRANGER, String((Number(code) + 1) % 1000000).padStart(6, "1")) as any); // неверный код
+    await tg.bot.handleUpdate(msg(STRANGER, String((Number(code) + 1) % 1000000).padStart(6, "1")) as any); // a wrong code
     expect(ownerId()).toBe(OWNER);
     await tg.bot.handleUpdate(msg(STRANGER, `/start ${code}`) as any);
-    for (let i = 0; i < 50 && ownerId() !== STRANGER; i++) await Bun.sleep(10); // сообщения разбираются по очереди
+    for (let i = 0; i < 50 && ownerId() !== STRANGER; i++) await Bun.sleep(10); // messages are handled in order
     expect(ownerId()).toBe(STRANGER);
     await Bun.sleep(20);
     expect(calls.some((c) => c.method.startsWith("send") && c.payload.chat_id === OWNER && JSON.stringify(c.payload).includes("другому аккаунту"))).toBe(true);
   });
 
-  test("код из группы не принимается", async () => {
+  test("a code from a group doesn't count", async () => {
     const { tg } = makeTg();
     const code = createPairCode();
     await tg.bot.handleUpdate(msg(STRANGER, code, {}, "group") as any);
@@ -93,7 +92,7 @@ describe("сопряжение", () => {
   });
 });
 
-describe("только владелец", () => {
+describe("owner only", () => {
   beforeEach(async () => {
     rmSync(join(STATE, "owner.json"), { force: true });
     const { tg } = makeTg();
@@ -101,7 +100,7 @@ describe("только владелец", () => {
     await tg.bot.handleUpdate(msg(OWNER, code) as any);
   });
 
-  test("сообщения чужих и из групп отбрасываются, владельца — доходят", async () => {
+  test("messages from strangers and groups are dropped, the owner's arrive", async () => {
     const { tg } = makeTg();
     const got: string[] = [];
     tg.onIncoming((m) => got.push(m.text));
@@ -111,7 +110,7 @@ describe("только владелец", () => {
     expect(got).toEqual(["привет"]);
   });
 
-  test("пересланное помечается и не считается решением по кнопке", async () => {
+  test("a forwarded message is marked and never counts as a decision", async () => {
     const { tg } = makeTg();
     const approvals = new Approvals(tg);
     const got: any[] = [];
@@ -126,14 +125,14 @@ describe("только владелец", () => {
     expect(await decision).toBe("timeout");
   });
 
-  test("кнопка «Разрешить» чужого не действует, владельца — действует; без совета кнопки нейтральные", async () => {
+  test("a stranger's Allow does nothing, the owner's works; without advice the buttons are neutral", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     const p = approvals.confirm({ source: "тест", action: "rm -rf build-old", timeoutMs: 5000 });
     await Bun.sleep(20);
     const sent = calls.find((c) => c.method === "sendRichMessage")!;
     const yes = sent.payload.reply_markup.inline_keyboard[0][0];
-    expect(yes.style).toBeUndefined(); // красная «Отклонить» без совета читалась бы как тревога
+    expect(yes.style).toBeUndefined(); // a red Decline without advice would read as an alarm
     expect(sent.payload.reply_markup.inline_keyboard[0][1].style).toBeUndefined();
     await tg.bot.handleUpdate(press(STRANGER, yes.callback_data) as any);
     let settled = false;
@@ -144,13 +143,13 @@ describe("только владелец", () => {
     expect(await p).toBe("yes");
   });
 
-  test("после решения кнопки гаснут на месте: одна погасшая кнопка с подписью, текст не трогаем", async () => {
+  test("after a decision the buttons become one disabled caption and the text stays", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     const p = approvals.confirm({ source: "Сборка", action: "Выложить архитектора", reason: "Тесты зелёные", timeoutMs: 5000 });
     await Bun.sleep(20);
     const sent = calls.find((c) => c.method === "sendRichMessage")!;
-    expect(sent.payload.rich_message.markdown).toStartWith("Выложить архитектора"); // карточка короче четырёх строк — без жирного
+    expect(sent.payload.rich_message.markdown).toStartWith("Выложить архитектора"); // under four lines: no bold
     await tg.bot.handleUpdate(press(OWNER, sent.payload.reply_markup.inline_keyboard[0][1].callback_data) as any);
     expect(await p).toBe("no");
     const edit = calls.find((c) => c.method === "editMessageText")!;
@@ -161,7 +160,7 @@ describe("только владелец", () => {
     expect(btn.callback_data).toBeUndefined();
   });
 
-  test("непонятная команда: цветом выделена «Сначала объясни»; нажатие снимает запрос с просьбой для сессии", async () => {
+  test("an unclear command highlights Explain first, which withdraws the request with a note for the session", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     const p = approvals.confirm({ source: "«Тест»", action: "python3 -c …", tool: "Bash", input: { command: `python3 -c 'import os; os.remove("x")'`, description: "Remove x" }, cwd: STATE, timeoutMs: 5000 });
@@ -171,17 +170,17 @@ describe("только владелец", () => {
       sent = calls.find((c) => c.method === "sendRichMessage");
     }
     const kb = sent!.payload.reply_markup.inline_keyboard;
-    // «да» — глаголом из первой строки («Запустить скрипт…?»): нажимая, он видит, что делает
+    // yes takes the first line's verb, so the owner sees what the tap does
     expect(kb.map((r: any[]) => r.map((b) => [b.text, b.style]))).toEqual([[["Запустить", undefined], ["Отклонить", undefined]], [["Сначала объясни", "primary"]]]);
     expect(sent!.payload.rich_message.markdown).toMatch(/^Запустить скрипт [^\n]+\? *\nСкрипт может удалять файлы\. *\nПросит сессия «Тест»\. *\n/);
-    expect(sent!.payload.rich_message.markdown.split("<details>")[0]).not.toContain("python3"); // команда — только под «Подробнее»
+    expect(sent!.payload.rich_message.markdown.split("<details>")[0]).not.toContain("python3"); // the command only under Details
     await tg.bot.handleUpdate(press(OWNER, kb[1][0].callback_data) as any);
     const r = await p;
     expect(typeof r === "object" && r.tell).toContain("description");
     expect(calls.find((c) => c.method === "editMessageText")!.payload.reply_markup.inline_keyboard[0][0].text).toStartWith("Объяснение запрошено в ");
   });
 
-  test("вопрос: варианты без значков, после ответа — погасшая подпись с выбором", async () => {
+  test("question: options without icons, then a disabled caption with the choice", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     const p = approvals.ask({ source: "«Шапка»", questions: [{ question: "Какой вариант?", options: [{ label: "Тёмная" }, { label: "Светлая" }] }], timeoutMs: 5000 });
@@ -193,28 +192,28 @@ describe("только владелец", () => {
     expect(calls.find((c) => c.method === "editMessageText")!.payload.reply_markup.inline_keyboard[0][0].text).toStartWith("Выбрано «Светлая» в ");
   });
 
-  test("вопрос: варианты — только кнопками; свой вариант — только ответом (свайпом) на сам вопрос", async () => {
+  test("question: options only as buttons, a free-form answer only as a reply (swipe) to the question", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     const q = { question: "Какой вариант?", options: [{ label: "Тёмная", description: "ночью меньше слепит" }, { label: "Светлая" }] };
     const p = approvals.ask({ source: "«Шапка»", questions: [q], timeoutMs: 5000 });
     await Bun.sleep(20);
     const md: string = calls.find((c) => c.method === "sendRichMessage")!.payload.rich_message.markdown;
-    expect(md.split("<details>")[0]).not.toContain("Тёмная"); // варианты текстом не повторяются, пояснения — под «Подробнее»
-    expect(md).not.toContain("Свой вариант"); // без служебной подсказки: свой ответ — свайпом по вопросу
+    expect(md.split("<details>")[0]).not.toContain("Тёмная"); // options aren't repeated in text; descriptions go under Details
+    expect(md).not.toContain("Свой вариант"); // no hint about free-form replies
     const qid = tg.lastId;
     const said = (o: Record<string, unknown>) => approvals.takeText({ messageId: qid + 1, text: "Синяя", files: [], ...o });
-    expect(said({})).toBe(false); // постороннее сообщение сразу после вопроса — не ответ
-    expect(said({ replyToId: qid - 1 })).toBe(false); // ответ на другое сообщение — не ответ
+    expect(said({})).toBe(false); // a message right after the question is no answer
+    expect(said({ replyToId: qid - 1 })).toBe(false); // nor is a reply to another message
     expect(said({ replyToId: qid })).toBe(true);
     expect(await p).toEqual({ "Какой вариант?": "Синяя" });
     const edit = calls.find((c) => c.method === "editMessageText")!.payload;
     expect(edit.reply_markup.inline_keyboard[0][0].text).toStartWith("Ответ получен в ");
-    expect(edit.rich_message.markdown).not.toContain("Свой вариант"); // вопрос закрыт — подсказка убрана
-    expect(said({ messageId: qid + 9, replyToId: qid })).toBe(false); // на уже решённый вопрос — не ответ
+    expect(edit.rich_message.markdown).not.toContain("Свой вариант");
+    expect(said({ messageId: qid + 9, replyToId: qid })).toBe(false); // a decided question takes no more answers
   });
 
-  test("вопрос с советом: причина совета — из пояснения к советуемому варианту, без повтора под «Подробнее»", async () => {
+  test("a question with advice takes the reason from the recommended option's description, not repeated under Details", async () => {
     const { tg, calls } = makeTg();
     const approvals = new Approvals(tg);
     void approvals.ask({ source: "«Шапка», beacon", questions: [{ question: "Какой вариант?", options: [{ label: "Тёмная (Recommended)", description: "как на макете" }, { label: "Светлая" }] }], timeoutMs: 300 });
@@ -224,7 +223,7 @@ describe("только владелец", () => {
     expect(md).not.toContain("<details>");
   });
 
-  test("вопрос архитектора: постороннее сообщение не ответ, ответ свайпом — ответ", async () => {
+  test("the architect's question: an unrelated message is no answer, a swipe reply is", async () => {
     const { tg } = makeTg();
     const approvals = new Approvals(tg);
     const p = approvals.ask({ source: "Архитектор", questions: [{ question: "Какую папку?", options: [{ label: "A" }, { label: "B" }] }], timeoutMs: 5000 });
@@ -235,7 +234,7 @@ describe("только владелец", () => {
     expect(await p).toEqual({ "Какую папку?": "C" });
   });
 
-  test("кнопка «Стоп» в черновике: от владельца — останавливает, из чужого чата — нет", async () => {
+  test("the draft's Stop button works for the owner, not from another chat", async () => {
     const { tg } = makeTg();
     const stops: number[] = [];
     tg.onStop((d) => stops.push(d));
@@ -244,7 +243,7 @@ describe("только владелец", () => {
     expect(stops).toEqual([8]);
   });
 
-  test("ответ — rich-сообщением с Markdown; формулы не включаются от знака $", async () => {
+  test("replies go as rich Markdown messages, and $ doesn't start math", async () => {
     const { tg, calls } = makeTg();
     await tg.send("**Итог**: стоит $20 и $30\n\n| a | b |\n|---|---|\n| 1 | 2 |");
     const c = calls.find((x) => x.method === "sendRichMessage")!;
@@ -252,31 +251,31 @@ describe("только владелец", () => {
     expect(c.payload.rich_message.markdown).toContain("| a | b |");
   });
 
-  test("если rich не принят — уходит обычным HTML, ничего не теряется", async () => {
+  test("a rejected rich message goes as HTML with nothing lost", async () => {
     const { tg, calls } = makeTg({ failRich: true });
-    const ids = await tg.send("**Важно: сайт упал**\nМаяк не открывается\nс 14:02\nСессии работают"); // жирное — в сообщении от четырёх строк
+    const ids = await tg.send("**Важно: сайт упал**\nМаяк не открывается\nс 14:02\nСессии работают"); // bold needs four lines or more
     expect(ids.length).toBe(1);
     const c = calls.find((x) => x.method === "sendMessage")!;
     expect(c.payload.parse_mode).toBe("HTML");
     expect(c.payload.text).toContain("<b>Важно: сайт упал</b>");
   });
 
-  test("токен бота не уходит в сообщения", async () => {
+  test("the bot token never goes out in messages", async () => {
     const { tg, calls } = makeTg();
-    // выдуманный токен нужной формы
+    // a made-up token of the right shape
     const fake = `${"7".repeat(10)}:AAG${"x".repeat(32)}`;
     await tg.send(`вот токен ${fake} лови`);
     const c = calls.find((x) => x.method === "sendRichMessage")!;
     expect(c.payload.rich_message.markdown).not.toContain("AAGxxxx");
   });
 
-  test("черновик: «Думаю…» блоком; Markdown не принят — следующий кадр проще, ход не теряется; не чаще 0,7 с", async () => {
+  test("draft: Thinking as a block; rejected Markdown makes later frames simpler; at most one frame per 0.7 s", async () => {
     const { tg, calls } = makeTg({ failDraftMarkdown: true });
     tg.resetDraft();
     await tg.draft({ id: 5, thinking: "Смотрю сессии", canStop: true });
-    await tg.draft({ id: 5, md: "слишком рано" }); // меньше 0,7 с — кадр пропущен
+    await tg.draft({ id: 5, md: "слишком рано" }); // under 0.7 s: skipped
     await Bun.sleep(750);
-    await tg.draft({ id: 5, md: "Пишу ответ" }); // Markdown не принят → дальше блоками
+    await tg.draft({ id: 5, md: "Пишу ответ" }); // Markdown rejected → blocks from now on
     await Bun.sleep(750);
     await tg.draft({ id: 5, md: "Пишу ответ дальше" });
     const drafts = calls.filter((x) => x.method === "sendRichMessageDraft");
@@ -288,14 +287,14 @@ describe("только владелец", () => {
   });
 });
 
-// Ошибся архитектор — неправда не остаётся в ленте: исправляет своё сообщение на месте, кнопки при нём сохраняются
-test("исправление на месте: текст заменён, внизу «Исправлено в …», кнопки те же", async () => {
+// A wrong statement doesn't stay in the chat: the architect fixes its message in place and the buttons stay
+test("fix in place: new text, a corrected-at line, the same buttons", async () => {
   const { tg, calls } = makeTg();
   const [id] = await tg.send("Каталог на паузе.", { from: "architect", buttons: [[{ text: "Ответить: Каталог", data: "r:1" }]] });
   expect(await tg.correct(1, "Каталог работает с 20:52.")).toBe(true);
   const edit = calls.find((c) => c.method === "editMessageText")!;
   expect(edit.payload.message_id).toBe(id);
-  expect(JSON.stringify(edit.payload)).toMatch(/Каталог работает с.20:52/); // после «с» — неразрывный пробел
+  expect(JSON.stringify(edit.payload)).toMatch(/Каталог работает с.20:52/); // a no-break space after "с"
   expect(JSON.stringify(edit.payload)).toMatch(/Исправлено в.\d\d:\d\d/);
   expect(edit.payload.reply_markup.inline_keyboard[0][0].text).toBe("Ответить: Каталог");
   expect(await tg.correct(5, "нет такого")).toBe(false);

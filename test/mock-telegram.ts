@@ -1,6 +1,6 @@
-// Подставной Telegram Bot API для живых проверок: HTTP на 127.0.0.1, grammY ходит сюда через apiRoot (ARCH_TG_API).
-// Держит несколько ботов по токенам, очередь апдейтов на каждого, «человека», который пишет и нажимает кнопки,
-// и записывает всё, что человек видит в своих чатах.
+// A mock Telegram Bot API for live checks: HTTP on 127.0.0.1, reached by grammY through apiRoot (ARCH_TG_API). It holds
+// several bots by token with an update queue each and a "person" who writes and taps buttons, and records everything
+// the person sees in their chats.
 type User = { id: number; is_bot: boolean; first_name: string; last_name?: string; username?: string };
 type Btn = { text: string; kind: "callback" | "url" | "copy"; style?: string; data?: string; url?: string; copy?: string };
 type KBtn = { text: string; kind: "text" | "managed_bot"; req?: { suggested_name?: string; suggested_username?: string } };
@@ -20,8 +20,8 @@ const hhmm = () => new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", min
 export class MockTelegram {
   server: ReturnType<typeof Bun.serve>;
   url: string;
-  bots = new Map<string, Bot>(); // по имени
-  chats = new Map<string, ChatEvent[]>(); // переписка человека с ботом, по имени бота
+  bots = new Map<string, Bot>(); // by username
+  chats = new Map<string, ChatEvent[]>(); // the person's chat with each bot, by bot username
   calls: { bot: string; method: string; payload: any }[] = [];
   private nextUser = 1;
 
@@ -56,18 +56,18 @@ export class MockTelegram {
     this.chats.get(bot)!.push(e);
   }
 
-  // ── человек ────────────────────────────────────────────────────────────────
+  // ── the person ─────────────────────────────────────────────────────────────
 
   say(bot: string, text: string, from: User = this.person) {
     const b = this.bots.get(bot)!;
     const id = ++b.seq;
-    // параметр ссылки t.me/бот?start=… Telegram отправляет боту, но в чате человек видит просто «/start»
+    // Telegram sends the t.me/bot?start=… parameter to the bot, but the person sees just "/start"
     if (from.id === this.person.id) this.log(bot, { t: "user", id, at: hhmm(), text: text.startsWith("/start ") ? "/start" : text });
     const entities = text.startsWith("/") ? [{ type: "bot_command", offset: 0, length: text.split(/\s/)[0].length }] : undefined;
     this.push(b, { message: { message_id: id, date: Math.floor(Date.now() / 1000), chat: { id: from.id, type: "private", first_name: from.first_name }, from, text, entities } });
   }
 
-  // Нажатие инлайн-кнопки по её тексту в последнем виде сообщения.
+  // Taps an inline button by its text, in the latest version of its message
   press(bot: string, text: string): Btn {
     const b = this.bots.get(bot)!;
     const { id, btn } = this.findButton(bot, text);
@@ -76,11 +76,12 @@ export class MockTelegram {
     return btn;
   }
 
-  // Кнопка своей клавиатуры Telegram (под полем ввода). «Создать бота» — как настоящий Telegram: новый бот и апдейты менеджеру.
+  // Taps a reply keyboard button (under the input field). Creating a bot acts as in Telegram: a new bot and updates for
+  // the manager.
   pressKeyboard(bot: string, text: string): Bot | undefined {
     const kb = this.activeKeyboard(bot);
     const k = kb?.rows.flat().find((x) => x.text === text);
-    if (!k) throw new Error(`нет кнопки «${text}» в клавиатуре @${bot}`);
+    if (!k) throw new Error(`no "${text}" button in @${bot}'s keyboard`);
     if (k.kind === "text") return void this.say(bot, text);
     const name = k.req?.suggested_username ?? "personal_arch_bot";
     const created = this.addBot(name, k.req?.suggested_name ?? "Бот", { manager: bot });
@@ -111,10 +112,10 @@ export class MockTelegram {
       const btn = rows?.flat().find((x) => x.text === text);
       if (btn) return { id, btn };
     }
-    throw new Error(`нет кнопки «${text}» у @${bot}`);
+    throw new Error(`no "${text}" button from @${bot}`);
   }
 
-  // Ждать нового сообщения (или правки) бота, подходящего под условие, — не дольше ms.
+  // Waits up to ms for a new bot message or edit that passes the test
   async waitFor(bot: string, test: (text: string, e: ChatEvent) => boolean, ms = 20_000): Promise<ChatEvent> {
     const until = Date.now() + ms;
     const from = this.chats.get(bot)!.length;
@@ -122,7 +123,7 @@ export class MockTelegram {
       for (const e of this.chats.get(bot)!.slice(from)) if ((e.t === "bot" || e.t === "edit") && test(e.text ?? "", e)) return e;
       await Bun.sleep(50);
     }
-    throw new Error(`@${bot} не прислал ожидаемого за ${ms / 1000} с; последнее: ${JSON.stringify(this.chats.get(bot)?.slice(-2))}`);
+    throw new Error(`@${bot} sent nothing matching in ${ms / 1000} s; last: ${JSON.stringify(this.chats.get(bot)?.slice(-2))}`);
   }
 
   // ── Bot API ────────────────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ export class MockTelegram {
         return ok(true);
       }
       default:
-        return ok(true); // setMyCommands, deleteWebhook, sendChatAction, черновики, реакции и прочее — принято
+        return ok(true); // setMyCommands, deleteWebhook, sendChatAction, drafts, reactions and the rest
     }
   }
 }

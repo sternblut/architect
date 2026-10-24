@@ -1,4 +1,4 @@
-// Установщик общего хука: добавляет ровно свои записи, чужое не трогает, снимается начисто.
+// The shared hook installer adds exactly its own entries, leaves the rest alone and uninstalls cleanly.
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ writeFileSync(process.env.ARCH_USER_SETTINGS, JSON.stringify(original, null, 2) 
 const { install, uninstall, installed } = await import("../src/install-hooks");
 const read = () => JSON.parse(readFileSync(process.env.ARCH_USER_SETTINGS!, "utf8"));
 
-test("ставит три записи и не трогает чужое", () => {
+test("adds three entries and leaves the rest alone", () => {
   install();
   const s = read();
   expect(installed()).toBe(true);
@@ -31,22 +31,22 @@ test("ставит три записи и не трогает чужое", () =>
   expect(s.hooks.PreToolUse[0].matcher).toBe("AskUserQuestion");
 });
 
-test("повторная установка не плодит дубли", () => {
+test("installing again adds no duplicates", () => {
   install();
   const s = read();
   expect(s.hooks.Stop.length).toBe(2);
   expect(s.hooks.PermissionRequest.length).toBe(1);
 });
 
-test("снятие возвращает настройки к исходным", () => {
+test("uninstalling restores the original settings", () => {
   uninstall();
   expect(installed()).toBe(false);
   expect(read()).toEqual(original);
 });
 
-// проверка из другой копии кода не должна слать владельцу в настоящий чат пробные «Удалить файлы…?» и «Какой вариант?»:
-// общий хук узнаёт папку проверок любой копии, а не только своей
-test("папка проверок любой копии архитектора — служебная; «testing» и чужие test — нет", async () => {
+// A test run from another checkout must not send its sample questions to the real chat, so the shared hook knows the
+// test folder of any checkout
+test("the test folder of any Architect checkout is internal; testing and unrelated test folders are not", async () => {
   const { ARCH_HOME, isTestCwd } = await import("../src/config");
   const other = mkdtempSync(join(tmpdir(), "arch-copy-"));
   mkdirSync(join(other, "src"), { recursive: true });
@@ -57,11 +57,11 @@ test("папка проверок любой копии архитектора �
   expect(isTestCwd(join(tmpdir(), "handbook", "test"))).toBe(false);
 });
 
-// config.json в репозитории — образец, свои настройки Mac — в config.local.json
-test("свои настройки поверх образца; мастер — только пока своих нет", async () => {
+// config.json in the repo is the template; a Mac's own settings go in config.local.json
+test("local settings override the template; setup runs only without them", async () => {
   const { mergeConfig } = await import("../src/config");
   const template = { lang: "en", hookPort: 47300, setupDone: false };
-  expect(mergeConfig(template)).toEqual(template); // новая установка — мастер настройки
-  expect(mergeConfig(template, { lang: "ru", sites: [{ name: "Маяк" }] })).toEqual({ lang: "ru", hookPort: 47300, sites: [{ name: "Маяк" }] }); // своё — без мастера
-  expect(mergeConfig(template, { setupDone: true })).toEqual({ lang: "en", hookPort: 47300, setupDone: true }); // мастер пройден
+  expect(mergeConfig(template)).toEqual(template); // a new install: setup
+  expect(mergeConfig(template, { lang: "ru", sites: [{ name: "Маяк" }] })).toEqual({ lang: "ru", hookPort: 47300, sites: [{ name: "Маяк" }] }); // own settings: no setup
+  expect(mergeConfig(template, { setupDone: true })).toEqual({ lang: "en", hookPort: 47300, setupDone: true }); // setup done
 });

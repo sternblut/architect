@@ -12,7 +12,7 @@ for f in test/*.test.ts; do bun test "$f" || exit 1; done   # each file in its o
 bun run check                                              # TypeScript, no emit
 ```
 
-Live checks against real Telegram and Claude Code are in `test/e2e-*.ts`.
+Live checks with real Claude Code sessions, a local Worker and a mock Telegram are in `test/e2e-*.ts`; run them by hand.
 
 ## Pull requests
 

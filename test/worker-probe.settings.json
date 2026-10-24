@@ -1,8 +1,0 @@
-{
-  "hooks": {
-    "PreToolUse": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:47321/hook", "timeout": 600, "headers": { "X-Arch-Secret": "$ARCH_HOOK_SECRET" }, "allowedEnvVars": ["ARCH_HOOK_SECRET"], "onFailure": "block" }] }],
-    "PermissionRequest": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:47321/hook", "timeout": 600, "headers": { "X-Arch-Secret": "$ARCH_HOOK_SECRET" }, "allowedEnvVars": ["ARCH_HOOK_SECRET"] }] }],
-    "Notification": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:47321/hook", "timeout": 10, "headers": { "X-Arch-Secret": "$ARCH_HOOK_SECRET" }, "allowedEnvVars": ["ARCH_HOOK_SECRET"] }] }],
-    "Stop": [{ "hooks": [{ "type": "http", "url": "http://127.0.0.1:47321/hook", "timeout": 600, "headers": { "X-Arch-Secret": "$ARCH_HOOK_SECRET" }, "allowedEnvVars": ["ARCH_HOOK_SECRET"] }] }]
-  }
-}

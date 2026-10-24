@@ -1,5 +1,5 @@
-// Сессии Claude Code на этом Mac: список, журналы, запуск, остановка, доставка сообщений.
-// Всё через штатные команды: claude agents --json, claude --bg, claude stop, claude --resume --bg.
+// Claude Code sessions on this Mac: listing, transcripts, start, stop, message delivery.
+// Only through the claude CLI: claude agents --json, claude --bg, claude stop, claude --resume --bg.
 import { existsSync, openSync, readSync, closeSync, fstatSync, realpathSync, statSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ARCH_HOME, HOME, STATE, WORK, config, isTestCwd, projectDir, tr } from "./config";
@@ -36,9 +36,9 @@ const WORKERS_FILE = join(STATE, "workers.json");
 const OUTBOX_FILE = join(STATE, "outbox.json");
 export const WORKER_SETTINGS = join(STATE, "worker-settings.json");
 
-// Хуки рабочих сессий. Шлагбаум — командой (работает и без хоста), остальное — в хост по HTTP.
-// Все события — одной командой (hook.ts): секрет она берёт из связки ключей, в файле настроек секрета нет.
-export function writeWorkerSettings(_secret: string, bunPath: string) {
+// Worker hooks, all one command (hook.ts): the gate runs in it even without the host, the rest goes to the host over
+// HTTP. The hook reads the secret from the Keychain, so the settings file holds none.
+export function writeWorkerSettings(bunPath: string) {
   const env = process.env.ARCH_STATE_DIR ? `ARCH_STATE_DIR='${process.env.ARCH_STATE_DIR}' ARCH_HOOK_PORT=${config.hookPort} ` : "";
   const cmd = (timeout: number, onFailure?: "block") => ({ hooks: [{ type: "command", command: `${env}'${bunPath}' '${join(ARCH_HOME, "src", "hook.ts")}'`, timeout, ...(onFailure ? { onFailure } : {}) }] });
   writeJson(WORKER_SETTINGS, {
@@ -61,8 +61,8 @@ export function setPsBin(p: string) {
   psBin = p;
 }
 
-// Одна доставка или перезапуск на разговор за раз: два слова подряд иначе останавливали и поднимали сессию
-// наперегонки, и Claude Code заводил копии. Внутри замка строка сессии читается заново.
+// One delivery or restart per conversation at a time: two in a row would race to stop and resume the session, and
+// Claude Code would start copies. The session row is read again inside the lock.
 const turns = new Map<string, Promise<unknown>>();
 async function oneAtATime<T>(row: AgentRow, f: (row: AgentRow) => Promise<T>): Promise<T> {
   const key = row.sessionId ?? row.id ?? "";
@@ -75,13 +75,13 @@ async function oneAtATime<T>(row: AgentRow, f: (row: AgentRow) => Promise<T>): P
   return next;
 }
 
-// Все сессии Claude Code на Mac, кроме самого архитектора (он и так говорит с владельцем напрямую).
+// All Claude Code sessions on the Mac except the architect itself
 export async function listAgents(all = true): Promise<AgentRow[]> {
   const r = await run([claudeBin, "agents", "--json", ...(all ? ["--all"] : [])], { timeoutMs: 20_000 });
   if (r.code !== 0) throw new Error(`claude agents: ${clip(r.stderr || r.stdout, 300)}`);
   const self = readJson<{ sessionId?: string }>(join(STATE, "architect.json"), {}).sessionId;
-  // служебные сессии владельцу не показываем: проверки (папка test), копии агентов разработки (.claude/worktrees)
-  // временные папки и пробные прогоны в папке самого архитектора; в самих проверках (ARCH_STATE_DIR) — видны
+  // Hidden from the owner: test sessions, dev worktrees (.claude/worktrees), temp folders and trial runs in the
+  // architect's own folder. Tests (ARCH_STATE_DIR) see them all.
   const dev = (x: AgentRow) => {
     const cwd = String(x.cwd ?? "");
     return isTestCwd(cwd) || cwd.startsWith(join(ARCH_HOME, ".claude")) || /^\/(private\/)?tmp\//.test(cwd) || (cwd === WORK && !workers.get(x.sessionId));
@@ -89,9 +89,9 @@ export async function listAgents(all = true): Promise<AgentRow[]> {
   return oneRowPerSession((JSON.parse(r.stdout) as AgentRow[]).filter((x) => (!self || x.sessionId !== self) && (!!process.env.ARCH_STATE_DIR || !dev(x))));
 }
 
-// Один разговор — одна строка. После перевода в фон у разговора остаются две записи: живой процесс во вкладке
-// Терминала и фоновая сессия с тем же номером. Перезапуск фоновой даёт «Can't open — this session is running
-// in another terminal». Живая запись важнее, у Терминала — первая.
+// One row per conversation. After /bg a conversation has two rows, the live process in a Terminal tab and a background
+// session with the same id, and respawning the background one fails with "Can't open — this session is running in
+// another terminal". Prefer the row with a live process, then the Terminal one.
 export function oneRowPerSession(rows: AgentRow[]): AgentRow[] {
   const rank = (r: AgentRow) => (r.pid ? 2 : 0) + (r.kind !== "background" ? 1 : 0);
   const best = new Map<string, AgentRow>();
@@ -107,7 +107,7 @@ export function oneRowPerSession(rows: AgentRow[]): AgentRow[] {
   return [...out, ...best.values()];
 }
 
-// ── рабочие сессии архитектора ───────────────────────────────────────────────
+// ── workers ──────────────────────────────────────────────────────────────────
 
 export const workers = {
   all(): Record<string, Worker> {
@@ -135,7 +135,7 @@ export const workers = {
   },
 };
 
-// Очередь сообщений владельца для занятых сессий: отдаётся хуком на следующем шаге сессии.
+// The owner's messages for busy sessions, handed over by the hook at the session's next step
 export const outbox = {
   take(sessionId: string): string[] {
     const all = readJson<Record<string, string[]>>(OUTBOX_FILE, {});
@@ -156,7 +156,7 @@ export const outbox = {
   },
 };
 
-// ── журналы ──────────────────────────────────────────────────────────────────
+// ── transcripts ──────────────────────────────────────────────────────────────
 
 export type Entry = { type?: string; timestamp?: string; message?: { role?: string; content?: unknown }; aiTitle?: string; title?: string; [k: string]: unknown };
 
@@ -195,7 +195,7 @@ const blocks = (e: Entry): Block[] => {
 };
 const isNoise = (t: string) =>
   t.startsWith("<") || t.startsWith("[Request interrupted") || t.startsWith("Caveat:") || t.startsWith("Stop hook feedback") || t.startsWith("This session is being continued") || t.startsWith("[Image");
-// служебные записи журнала (пересказ сжатия, вставки Claude Code, ветки помощников) — не слова владельца (claude-code-viewer)
+// Meta entries (compaction summaries, Claude Code insertions, subagent branches) are not the owner's words
 const service = (e: Entry) => !!(e.isMeta || e.isCompactSummary || e.isSidechain);
 const fromSession = (t: string) => t.startsWith("Another Claude session sent a message");
 
@@ -205,21 +205,21 @@ export function toolBrief(name: string, input: Record<string, unknown> = {}): st
   return clip(String(v).replace(/\s+/g, " "), 140);
 }
 
-// named — название дал человек (/rename); apiError — ход кончился ошибкой API (лимит, вход) и после неё ничего не было;
-// question — последний вопрос сессии владельцу, на который он ещё не ответил; tools — её последние вызовы инструментов коротко
+// named: a person set the title (/rename). apiError: the turn ended in an API error (limit, sign-in) with nothing after it.
+// question: the session's last unanswered question to the owner. tools: its recent tool calls in short.
 export type Digest = { title?: string; named?: boolean; goal?: string; goalMet?: boolean; lastText?: string; lastTool?: string; lastUser?: string; lastTs?: number; rcUrl?: string; apiError?: string; question?: string; tools?: string[] };
 
 export function digest(entries: Entry[]): Digest {
   const d: Digest = {};
   let custom: string | undefined;
   for (const e of entries) {
-    // название: ручное (/rename) важнее придуманного Claude (claudecodeui)
+    // a title set with /rename beats Claude's own
     if (e.type === "custom-title") custom = String(e.customTitle ?? e.title ?? "") || custom;
     if (e.type === "ai-title" || e.type === "summary") d.title = String(e.aiTitle ?? e.title ?? (e as { summary?: string }).summary ?? d.title ?? "");
-    // ссылка Remote Control: system/bridge_status с url, а чаще только запись bridge-session (session_ + id без cse_)
+    // Remote Control link: system/bridge_status with a url, more often only a bridge-session entry (session_ + id without cse_)
     if (e.type === "system" && (e as { subtype?: string }).subtype === "bridge_status" && typeof (e as { url?: unknown }).url === "string") d.rcUrl = String((e as { url: string }).url);
     if (e.type === "bridge-session" && typeof e.bridgeSessionId === "string") d.rcUrl = `https://claude.ai/code/session_${String(e.bridgeSessionId).replace(/^cse_/, "")}`;
-    // цель /goal — штатная запись goal_status (happy, ccteam): met без sentinel — достигнута, met с sentinel — снята
+    // /goal state from goal_status entries: met without sentinel means achieved, met with sentinel means cleared
     const att = (e as { attachment?: { type?: string; met?: boolean; sentinel?: boolean; condition?: string } }).attachment;
     if (e.type === "attachment" && att?.type === "goal_status") {
       if (att.met) {
@@ -231,7 +231,7 @@ export function digest(entries: Entry[]): Digest {
       }
     }
     if (e.timestamp) d.lastTs = Date.parse(e.timestamp) || d.lastTs;
-    // цель целиком повторяется в каждом «Stop hook feedback: [ЦЕЛЬ — …]»: у долгих сессий запись goal_status давно ушла из хвоста
+    // every "Stop hook feedback: [ЦЕЛЬ — …]" repeats the goal; in a long session the goal_status entry is long out of the tail
     if (e.type === "user" && !d.goal)
       for (const b of blocks(e)) {
         const g = b.type === "text" ? b.text?.match(/^Stop hook feedback:\s*\[(?:ЦЕЛЬ —\s*)?([\s\S]{10,300})/) : null;
@@ -256,7 +256,7 @@ export function digest(entries: Entry[]): Digest {
       for (const b of blocks(e)) {
         if (b.type === "text" && b.text?.trim()) {
           d.lastText = b.text.trim();
-          // последняя фраза с вопросом — то, чего сессия ждёт от владельца
+          // the last sentence ending in "?" is what the session waits for
           const q = d.lastText.replace(/[*_`#>]/g, "").split(/(?<=[.!?…])\s+(?=[А-ЯЁA-Z«])|\n+/).filter((s) => /\?\s*[»"]?$/.test(s.trim())).at(-1)?.trim();
           if (q) d.question = clip(q.replace(/^[-–—•\d.)\s]+/, ""), 300);
         }
@@ -275,12 +275,12 @@ export function digest(entries: Entry[]): Digest {
   return d;
 }
 
-// Последние реплики сессии: владелец, Claude и вызовы инструментов коротко.
+// The session's last messages: owner, Claude, and tool calls in short
 export function conversation(entries: Entry[], n: number): string[] {
   const rows: string[] = [];
   for (const e of entries) {
     if (e.type !== "user" && e.type !== "assistant") continue;
-    // время — по часам Mac, а не в UTC, как в журнале; не сегодня — с датой
+    // local time instead of the transcript's UTC, with the date when not today
     const d = e.timestamp ? new Date(e.timestamp) : undefined;
     const ts = d ? `${d.toDateString() === new Date().toDateString() ? "" : `${d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })} `}${d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : "";
     for (const b of blocks(e)) {
@@ -295,22 +295,7 @@ export function conversation(entries: Entry[], n: number): string[] {
 
 export type ConvRow = { ts: string; at: number; who: "owner" | "claude" | "tool" | "session"; text: string };
 
-// Что сессия делает сейчас — словами, без сырых команд.
-export function doing(lastTool?: string): string {
-  const name = (lastTool ?? "").split(":")[0];
-  if (!name) return "";
-  if (/^(Bash|BashOutput|KillShell|Monitor)$/.test(name)) return "выполняет команду";
-  if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return "правит файлы";
-  if (/^(Read|Grep|Glob|LS)$/.test(name)) return "читает код";
-  if (/^(WebFetch|WebSearch)$/.test(name)) return "ищет в интернете";
-  if (/^(Agent|Task)$/.test(name)) return "поручила работу помощнику";
-  if (name === "AskUserQuestion") return "спрашивает вас";
-  if (name === "SendMessage") return "пишет другой сессии";
-  if (name.startsWith("mcp__")) return "работает с инструментами";
-  return "работает";
-}
-
-// То же, что conversation(), но по полям — для оформления в Telegram.
+// conversation() as fields, for Telegram formatting
 export function conversationRows(entries: Entry[], n: number): ConvRow[] {
   const rows: ConvRow[] = [];
   for (const e of entries) {
@@ -327,7 +312,7 @@ export function conversationRows(entries: Entry[], n: number): ConvRow[] {
   return rows.slice(-n);
 }
 
-// Сколько раз за окно сессия получила «Stop hook feedback» (цель /goal не даёт остановиться) — признак холостого хода.
+// "Stop hook feedback" count within the window (a /goal won't let the session stop): a sign it is spinning
 export function spinCount(entries: Entry[], windowMs = 10 * 60_000): number {
   const since = Date.now() - windowMs;
   let n = 0;
@@ -338,8 +323,8 @@ export function spinCount(entries: Entry[], windowMs = 10 * 60_000): number {
   return n;
 }
 
-// Сколько действий (вызовов инструментов) сессия сделала с момента since и когда последнее: «работала ночью» —
-// это действия, а не любая запись в журнале (иначе в «работали ночью» попадают все сессии)
+// Tool calls since `since` and the time of the last one. "Worked overnight" means actions, not any transcript entry,
+// or every session would count.
 export function actionsSince(entries: Entry[], since: number): { n: number; last: number } {
   let n = 0;
   let last = 0;
@@ -369,7 +354,7 @@ export function sessionDigest(row: AgentRow): Digest {
   }
 }
 
-// ── поиск сессии по слову владельца ─────────────────────────────────────────
+// ── finding a session by the owner's word ────────────────────────────────────
 
 export async function findSession(key: string): Promise<AgentRow | undefined> {
   const rows = await listAgents(true);
@@ -381,7 +366,7 @@ export async function findSession(key: string): Promise<AgentRow | undefined> {
   );
 }
 
-// ── запуск и остановка ───────────────────────────────────────────────────────
+// ── start and stop ───────────────────────────────────────────────────────────
 
 export function resolveFolder(folder: string): string {
   const p = folder.replace(/^~(?=\/|$)/, HOME);
@@ -391,7 +376,7 @@ export function resolveFolder(folder: string): string {
   return real;
 }
 
-// Доверие Claude Code к папке: ключ — корень git-репозитория или сама папка.
+// Claude Code keys folder trust by the git root, or by the folder itself outside a repo
 export async function trustKey(dir: string): Promise<string> {
   const r = await run(["git", "-C", dir, "rev-parse", "--show-toplevel"], { timeoutMs: 5000 });
   return r.code === 0 ? r.stdout.trim() : dir;
@@ -402,7 +387,7 @@ export function isTrusted(key: string): boolean {
     const cfg = JSON.parse(readFileSync(join(HOME, ".claude.json"), "utf8"));
     const projects: Record<string, { hasTrustDialogAccepted?: boolean }> = cfg.projects ?? {};
     if (projects[key]?.hasTrustDialogAccepted) return true;
-    // вне репозитория доверие родителя распространяется на подпапки
+    // outside a repo, a trusted parent covers its subfolders
     return Object.entries(projects).some(([p, v]) => v.hasTrustDialogAccepted && key.startsWith(p + "/") && !existsSync(join(key, ".git")));
   } catch {
     return false;
@@ -418,10 +403,10 @@ export const WORKER_PREFACE = [
   "Хостинг напрямую не трогай: выкладка только конвейерами репозиториев. Токены и пароли не печатай.",
   "Пиши по-русски, коротко: что сделано, что проверено, что нужно от владельца. Слово «готово» без проверки не используй.",
 ].join("\n");
-// владелец читает по-английски — правила те же, а пишет сессия ему по-английски
+// The same rules for an English owner, plus: write to them in English
 const workerPreface = () => WORKER_PREFACE + tr("", "\nThe owner reads English: write everything he sees in English, not Russian — questions, turn summaries, Bash descriptions, commit messages.");
 
-// Правила рабочей сессии — системной подсказкой, задача — первым сообщением; с goal — штатной целью /goal (идёт, пока цель не достигнута).
+// Worker rules go in the system prompt, the task in the first message; with goal, as a /goal that runs until it is met
 export async function startWorker(o: { folder: string; task: string; name: string; model: string; effort: string; remote: boolean; goal?: boolean }): Promise<Worker> {
   const cwd = resolveFolder(o.folder);
   const args = [claudeBin, "--bg", "-n", o.name, "--model", o.model, "--effort", o.effort, "--settings", WORKER_SETTINGS, "--append-system-prompt", workerPreface()];
@@ -448,8 +433,8 @@ export async function stopSession(id: string): Promise<string> {
   return (r.stdout + r.stderr).trim();
 }
 
-// Поставить или снять штатную цель /goal фоновой сессии (/goal и /goal clear работают при пробуждении).
-// Терминальной сессии команды извне не выполняются (так устроен Claude Code) — только в ней самой или после /bg.
+// Sets or clears a session's /goal. A background session takes it on wake-up; a Terminal session only through the
+// restart wrapper (v2), since Claude Code takes no commands from outside.
 export async function setGoal(row: AgentRow, condition: string | null): Promise<Delivery> {
   if (row.kind !== "background" && (await wrapVersion(row)) >= 2) return deliver(row, condition ? `/goal ${condition.replace(/\s+/g, " ").trim()}` : "/goal clear");
   if (row.kind !== "background" || !row.sessionId || !row.id)
@@ -459,34 +444,31 @@ export async function setGoal(row: AgentRow, condition: string | null): Promise<
   return deliver(row, condition ? `/goal ${condition.replace(/\s+/g, " ").trim()}` : "/goal clear");
 }
 
-// Перезапустить сессию на нынешней версии Claude Code и продолжить с того же места: тот же разговор, та же цель.
-// Фоновую — `claude respawn <id>` (тот же номер, новый процесс, история на месте);
-// остановленную — `claude --bg --resume <sessionId>` без флагов (с любым флагом Claude Code заводит копию разговора).
-// Сессию из Терминала — только свободную: её процесс завершается (SIGTERM; разговор уже на диске), и она продолжается
-// фоновой под тем же номером. Дальше ей можно ставить цель и передавать слова владельца его репликами.
+// Restarts a session on the current Claude Code version and continues where it was: same conversation, same goal.
+// A background session: `claude respawn <id>` (same id, new process, history kept). A Terminal session: only in its
+// own tab, through bin/claude-wrap.zsh.
 export function restartSession(row: AgentRow): Promise<Delivery> {
   return oneAtATime(row, restartNow);
 }
 
 async function restartNow(row: AgentRow): Promise<Delivery> {
   if (!row.sessionId) return { ok: false, how: "failed", note: tr("у сессии нет разговора", "the session has no conversation") };
-  // вкладку без перезапуска видно сразу — не обещать «перезапущу, когда закончит ход», чтобы потом сказать «не вышло»
+  // check the tab first, so a restart that can't happen is never promised
   if (row.kind !== "background") {
     const no = await tabWithout(row);
     if (no) return no;
   }
   if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) return { ok: false, how: "queued", note: tr("занята", "busy") };
   if (row.kind === "background" && row.id) {
-    // фоновая, открытая во вкладке Терминала через `claude attach`: respawn закроет вкладку («Session has exited»).
-    // Такую — как старую вкладку: его команда `archi adopt` переводит её на место
+    // Open in a Terminal tab through `claude attach`: respawn would close the tab ("Session has exited").
+    // Treated as an old tab, which `archi adopt` moves.
     if (await attachedInTab(row.id)) return { ok: false, how: "old-tab", note: tr("она открыта во вкладке Терминала через attach: перезапуск закрыл бы вкладку", "it’s open in a Terminal tab through attach: restarting would close the tab") };
     const r = await run([claudeBin, "respawn", row.id], { timeoutMs: 60_000 });
     const out = (r.stdout + r.stderr).trim();
     return /respawned/i.test(out) ? { ok: true, how: "resumed", note: tr("перезапущена", "restarted") } : { ok: false, how: "failed", note: clip(out || tr("claude не ответил", "claude didn’t respond"), 200), raw: !!out };
   }
-  // Сессия из Терминала перезапускается только на месте — в её же вкладке: для владельца «то же место» — та же
-  // вкладка (перевод в фон закрыл бы её вкладку и оборвал работу). Это умеет обёртка
-  // bin/claude-wrap.zsh: она поднимает тот же разговор в той же оболочке. Без обёртки сессию не трогаем.
+  // A Terminal session restarts only in its own tab (moving it to the background would close the tab); that takes
+  // bin/claude-wrap.zsh. Without the wrapper it is left alone.
   if (row.kind !== "background") return restartInTab(row);
   if (!row.pid) return { ok: false, how: "failed", note: tr("процесс сессии не запущен", "the session’s process isn’t running") };
   const pid = row.pid;
@@ -511,10 +493,8 @@ async function restartNow(row: AgentRow): Promise<Delivery> {
 
 export const RESTART_DIR = process.env.CLAUDE_RESTART_DIR ?? join(HOME, ".claude", "architect", "restart");
 
-// Перезапуск в той же вкладке: оболочка с обёрткой (метка <pid оболочки>.tab) получает номер разговора и, когда
-// процесс claude завершится, сама поднимает `claude --resume <номер>`: тот же разговор, та же оболочка, новая версия.
-// Версия обёртки перезапуска у сессии из Терминала: 0 — обёртки нет, 1 — только перезапуск, 2 — и подъём с репликой.
-// Вкладки, открытые до установки второй версии обёртки, держат первую, пока их не откроют заново.
+// Restart wrapper version in a Terminal session's shell (mark file <shell pid>.tab): 0 none, 1 restart only,
+// 2 restart with a message. Tabs opened before v2 keep v1 until they are reopened.
 export async function wrapVersion(row: AgentRow): Promise<number> {
   if (row.kind === "background" || !row.pid) return 0;
   const shell = Number((await run(["ps", "-o", "ppid=", "-p", String(row.pid)])).stdout.trim());
@@ -523,25 +503,25 @@ export async function wrapVersion(row: AgentRow): Promise<number> {
   return readFileSync(mark, "utf8").startsWith("v2 ") ? 2 : 1;
 }
 
-// Копия — второй процесс того же разговора: обе работали бы наперегонки в одной папке, а владелец видел бы две
-// одинаковые сессии. Копию сразу останавливаем, учёт остаётся на исходной.
+// A copy is a second process of the same conversation, and both would work in the same folder at once.
+// Stop the copy and keep the original.
 async function dropCopy(copyId: string, out: string): Promise<Delivery> {
   log("sessions", "Claude Code завёл копию разговора — останавливаю её", clip(out, 300));
   await stopSession(copyId);
   return { ok: false, how: "failed", note: tr("Claude Code завёл копию разговора вместо продолжения — копию остановил, сообщение не передано", "Claude Code started a copy of the conversation instead of continuing it — stopped the copy, the message wasn’t delivered") };
 }
 
-// Открыта ли фоновая сессия во вкладке Терминала через `claude attach <id>`
+// Whether a background session is open in a Terminal tab through `claude attach <id>`
 export async function attachedInTab(id: string): Promise<boolean> {
   const r = await run([psBin, "-axo", "tty=,args="], { timeoutMs: 5000 });
   return r.stdout.split("\n").some((l) => !/^\s*\?\?/.test(l) && new RegExp(`claude attach ${id.replace(/[^\w-]/g, "")}(\s|$)`).test(l));
 }
 
-// Почему сессию из Терминала не перезапустить в её вкладке; undefined — можно.
+// Why a Terminal session can't be restarted in its tab; undefined if it can
 async function tabWithout(row: AgentRow): Promise<Delivery | undefined> {
   if (!row.pid || !row.sessionId) return { ok: false, how: "failed", note: tr("процесс сессии не запущен", "the session’s process isn’t running") };
   const shell = Number((await run(["ps", "-o", "ppid=", "-p", String(row.pid)])).stdout.trim());
-  if (shell === process.pid) return { ok: false, how: "self", note: tr("это сам архитектор", "that’s the architect itself") }; // его разговор держит хост
+  if (shell === process.pid) return { ok: false, how: "self", note: tr("это сам архитектор", "that’s the architect itself") };
   if (!shell || !existsSync(join(RESTART_DIR, `${shell}.tab`)))
     return {
       ok: false,
@@ -553,6 +533,7 @@ async function tabWithout(row: AgentRow): Promise<Delivery | undefined> {
     };
 }
 
+// The wrapper's shell gets the session id and, once claude exits, runs `claude --resume <id> [message]` itself
 async function restartInTab(row: AgentRow, prompt?: string): Promise<Delivery> {
   const no = await tabWithout(row);
   if (no || !row.pid || !row.sessionId) return no ?? { ok: false, how: "failed", note: tr("процесс сессии не запущен", "the session’s process isn’t running") };
@@ -562,7 +543,7 @@ async function restartInTab(row: AgentRow, prompt?: string): Promise<Delivery> {
   try {
     process.kill(row.pid, "SIGTERM");
   } catch {
-    // процесса уже нет — просьбу убрать, иначе вкладка поднимет сессию при следующем выходе владельца из Claude
+    // the process is gone: drop the request, or the tab would resume the session when the owner next quits claude
     try {
       unlinkSync(flag);
     } catch {}
@@ -577,10 +558,10 @@ async function restartInTab(row: AgentRow, prompt?: string): Promise<Delivery> {
   return { ok: false, how: "failed", note: tr("за 40 с сессия в своей вкладке не поднялась — посмотрите Терминал", "the session didn’t come back up in its tab within 40 s — check Terminal") };
 }
 
-// Занятую сессию перезапускаем, когда она закончит ход (наблюдатель проверяет каждые 10 с).
+// Restarts of busy sessions, done once they end their turn (the watcher checks every 10 s)
 const RESTARTS = join(STATE, "restarts.json");
 export const pendingRestarts = {
-  // у каждой — когда попросили и, если есть, реплика, с которой поднять разговор
+  // When it was asked for, and an optional message to resume with; older state stored only the time
   all: () => Object.fromEntries(Object.entries(readJson<Record<string, number | { at: number; prompt?: string }>>(RESTARTS, {})).map(([k, v]) => [k, typeof v === "number" ? { at: v } : v])) as Record<string, { at: number; prompt?: string }>,
   add(sessionId: string, prompt?: string) {
     writeJson(RESTARTS, { ...this.all(), [sessionId]: { at: Date.now(), prompt } });
@@ -592,19 +573,19 @@ export const pendingRestarts = {
   },
 };
 
-// raw — note не наши слова, а вывод программы: владельцу его не показываем
+// raw: note is program output, not our words, and is not shown to the owner
 export type Delivery = { ok: boolean; how: "queued" | "resumed" | "needs-sendmessage" | "failed" | "old-tab" | "self"; note: string; raw?: boolean };
 
-// Доставляет текст сессии самым прямым штатным путём:
-// занятой своей — через хук на её следующем шаге; простаивающей фоновой — пробуждением с этим текстом;
-// чужой занятой или терминальной — только через SendMessage архитектора (сессия увидит, что это от другой сессии).
+// Delivers text the most direct way: a Terminal session with the wrapper resumes in its tab with it; a busy worker gets
+// it from the hook at its next step; an idle background session is woken with it. Anything else takes the architect's
+// SendMessage, which the session sees as coming from another session.
 export function deliver(row: AgentRow, text: string): Promise<Delivery> {
   return oneAtATime(row, (r) => deliverNow(r, text));
 }
 
 async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
-  // сессия из Терминала с обёрткой: вкладка поднимает тот же разговор сразу с этим текстом — это реплика пользователя
-  // («claude --resume <id> "<текст>"» — ответ на текст; «/goal …» — цель поставлена и выполнена)
+  // the tab resumes the conversation with the text as the user's own message (`claude --resume <id> "<text>"`;
+  // a "/goal …" sets the goal and starts on it)
   if (row.kind !== "background" && (await wrapVersion(row)) >= 2) {
     if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) {
       pendingRestarts.add(row.sessionId!, text);
@@ -628,11 +609,11 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
     };
   }
   if (row.pid) {
-    // Открытую во вкладке через `claude attach` не останавливаем: владелец смотрит именно туда, а вкладка покажет
-    // «Session has exited». Сообщение между сессиями приходит в живой процесс без перезапуска.
+    // Not when it is open in a tab through `claude attach`: the owner is watching it there and the tab would show
+    // "Session has exited". SendMessage reaches the live process without a restart.
     if (await attachedInTab(row.id)) return { ok: false, how: "needs-sendmessage", note: "она открыта во вкладке Терминала: перезапуск закрыл бы вкладку — передать можно сообщением между сессиями" };
     await stopSession(row.id);
-    // ждём, пока процесс действительно уйдёт: иначе --resume поднимет копию разговора вместо продолжения
+    // wait until the process is really gone, or --resume would start a copy
     let gone = false;
     for (let i = 0; i < 30 && !gone; i++) {
       gone = !(await listAgents(true)).find((x) => x.sessionId === row.sessionId)?.pid;
@@ -640,8 +621,8 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
     }
     if (!gone) return { ok: false, how: "failed", note: tr("сессия не остановилась за 15 с — не поднимаю её заново, иначе Claude Code заведёт копию", "the session didn’t stop within 15 s — not resuming it, or Claude Code would start a copy") };
   }
-  // Флаги процесса (--settings с хуками-шлагбаумом, Remote Control, модель) в журнале не хранятся — у своих сессий передаём их заново,
-  // иначе после первого же ответа владельца сессия продолжила бы работу без шлагбаума.
+  // Process flags (--settings with the gate hooks, Remote Control, model) are not in the transcript: pass them again for
+  // our own sessions, or the session would carry on without the gate.
   const flags = w ? ["-n", w.name, "--model", w.model, "--effort", w.effort ?? config.workers.effort, "--settings", WORKER_SETTINGS, "--append-system-prompt", workerPreface(), ...(w.remote !== false ? ["--remote-control", w.name] : [])] : [];
   const r = await run([claudeBin, "--resume", row.sessionId, "--bg", ...flags, text], { cwd: row.cwd, timeoutMs: 60_000 });
   const out = (r.stdout + r.stderr).trim();

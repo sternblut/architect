@@ -1,4 +1,4 @@
-// Тесты написаны на московском времени, а бот показывает время по часам Mac: прогон не должен зависеть от пояса машины
+// Tests expect Moscow time while the bot shows Mac local time, so the run must not depend on the machine's time zone
 process.env.TZ = "Europe/Moscow";
-// и на своих настройках (сайты, репозитории, служба связки ключей), а не на образце config.json из репозитория
+// Tests use their own settings (sites, repos, Keychain service), not the repo's config.json template
 process.env.ARCH_CONFIG ??= `${import.meta.dir}/config.json`;

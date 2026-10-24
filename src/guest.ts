@@ -1,12 +1,12 @@
-// Чужие в общем боте — отдельный путь: только приветствие и подключение своего Mac.
-// Ни архитектора, ни инструментов, ни сессий, ни данных владельца: сюда приходит сырое обновление Telegram, отсюда уходят
-// только заранее написанные тексты. Содержимое сообщений не пишется в журнал и никуда не передаётся; файлы не скачиваются.
-// Частота ограничена: на человека и на всех вместе.
-// Подключение: коннектор на Mac показывает QR со ссылкой /start c<ключ Mac> и код из четырёх цифр →
-// человек вводит код с экрана своего Mac (ссылку можно переслать, код — только увидеть) → кнопка «Создать моего бота»
-// (managed bots, Bot API 9.6) → токен его бота запечатывается на ключ его Mac и кладётся в ящик (src/box.ts).
-// Токен живёт только в памяти, пока запечатывается.
-// `bun src/guest.ts dist <папка>` — собрать раздачу: установщик `i` (bin/install.sh с адресами и ключом менеджера) и archi.tgz.
+// Strangers in a shared bot get a separate path: only a greeting and connecting their own Mac. No architect, tools,
+// sessions or owner data: a raw Telegram update comes in, only prewritten texts go out. Message contents are never logged
+// or passed on, files are never downloaded, and the rate is limited per person and overall.
+// Connecting: the connector on the Mac shows a QR code with a /start c<Mac key> link and a four-digit code → the person
+// types the code from their Mac's screen (a link can be forwarded, the code must be seen) → a "Create my bot" button
+// (managed bots, Bot API 9.6) → the new bot's token is sealed to their Mac's key and put in the box (src/box.ts).
+// The token exists only in memory until sealed.
+// `bun src/guest.ts dist <folder>` builds a distribution: the installer `i` (bin/install.sh with the URLs and the
+// manager key filled in) and archi.tgz.
 import { GrammyError, type Api, type Context } from "grammy";
 import type { InlineKeyboardMarkup, ReplyKeyboardMarkup, User } from "grammy/types";
 import { join } from "node:path";
@@ -15,17 +15,17 @@ import { STATE, config, tr } from "./config";
 import { MANAGER_SERVICE, readSecret, writeSecret } from "./secret";
 import { log, readJson, writeJson } from "./util";
 
-const FILE = join(STATE, "guests.json"); // кто из чужих какой бот создал (без токенов), ждущие подключения и использованные ключи Mac
+const FILE = join(STATE, "guests.json"); // bots created for strangers (no tokens), pending connections, used Mac keys
 const PENDING_MS = 15 * 60_000;
 const LIMIT = { perMin: 8, perDay: 60, allPerMin: 60 };
 
 type Store = {
   bots: Record<string, { id: number; username: string; at: number }>;
-  pending: Record<string, { pub: string; at: number; tries?: number; ok?: boolean }>; // ok — код с экрана Mac совпал
+  pending: Record<string, { pub: string; at: number; tries?: number; ok?: boolean }>; // ok: the code from the Mac's screen matched
   used: Record<string, number>;
 };
 
-// Тексты — на языке установки этого бота (config.json, lang); читаются при каждой отправке
+// Texts in this bot's language (lang in the config), read at every send
 export const TEXT = {
   get welcome() {
     return tr(
@@ -81,10 +81,10 @@ export const TEXT = {
 };
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-// Короткий адрес установщика: команда в сообщении не рвётся посреди слова.
+// A short installer URL, so the command doesn't wrap mid-word in a message
 export const installCommand = (dist: string) => `curl -fsSL ${dist.replace(/\/$/, "")}/i | sh`;
 
-// Предлагаемое имя личного бота: латиница, 5–32 знака, начинается с буквы, кончается на bot.
+// A suggested username for the personal bot: Latin, 5–32 characters, starting with a letter and ending in "bot"
 export function suggestUsername(u: Pick<User, "username">): string {
   const base = (u.username ?? "").toLowerCase().replace(/[^a-z0-9_]/g, "").replace(/^[^a-z]+/, "").slice(0, 23);
   if (base.length >= 2) return `${base}_arch_bot`;
@@ -104,15 +104,15 @@ export class Guest {
     private dist = config.connect!.dist,
   ) {}
 
-  // Всё, что пришло не от владельца (и создание личных ботов). Никогда не вызывает обработчики владельца.
+  // Everything not from the owner, plus managed-bot creation. Never calls the owner's handlers.
   async handle(ctx: Context) {
     const u = ctx.update;
     const from = ctx.from;
     if (!from || from.is_bot) return;
-    // создание бота присылает сам Telegram после действий человека — его не душит никакой лимит
+    // Telegram itself sends the creation update after the person acts, so no rate limit applies
     if (u.managed_bot) return this.created(u.managed_bot.user, u.managed_bot.bot);
     const m = u.message;
-    if (m && (m.chat.type !== "private" || m.managed_bot_created)) return; // группы — мимо и без счёта; о создании — ответ уже ушёл
+    if (m && (m.chat.type !== "private" || m.managed_bot_created)) return; // groups aren't counted; creation was already answered
     if (!this.allow(from.id)) return;
     if (u.callback_query) {
       const data = u.callback_query.data;
@@ -127,13 +127,13 @@ export class Guest {
     const pair = t.match(/^\/start c([A-Za-z0-9_-]+)$/);
     if (pair) return this.pair(from, pair[1]);
     if (/^\d{4}$/.test(t) && this.awaitingCode(from.id)) return this.code(from, t);
-    log("guest", `незнакомец: ${/^\/start\b/.test(t) ? "старт" : "сообщение"}`, { user: from.id }); // содержимое не пишем
+    log("guest", `незнакомец: ${/^\/start\b/.test(t) ? "старт" : "сообщение"}`, { user: from.id }); // never the content
     if (/^\/start\b/.test(t)) return this.welcome(from.id);
     return this.say(from.id, TEXT.hint);
   }
 
-  // Ссылка из QR на Mac: /start c<ключ Mac>. Ничего необратимого: сначала код с экрана этого Mac.
-  // Владелец тоже может так подключить ещё один свой Mac.
+  // The QR link from the Mac: /start c<Mac key>. Nothing irreversible happens before the code from that Mac's screen.
+  // The owner can connect another Mac of theirs this way too.
   async pair(from: Pick<User, "id" | "first_name" | "last_name" | "username">, pub: string) {
     if (!isDevicePub(pub)) return this.say(from.id, TEXT.broken);
     this.prune();
@@ -151,12 +151,12 @@ export class Guest {
     return !!p && !p.ok && Date.now() - p.at < PENDING_MS;
   }
 
-  // Код с экрана Mac: только после него бот создаётся или переносится. Три попытки, потом — новый QR.
+  // The code from the Mac's screen: only then is a bot created or moved. Three tries, then a new QR code.
   async code(from: Pick<User, "id" | "first_name" | "last_name" | "username">, text: string) {
     const p = this.st.pending[from.id];
     if (!p || p.ok) return;
     const right = text === (await pairCode(p.pub));
-    if (this.st.pending[from.id] !== p || p.ok) return; // пока считали, попытки кончились или код уже принят
+    if (this.st.pending[from.id] !== p || p.ok) return; // meanwhile the tries ran out or the code was accepted
     if (!right) {
       p.tries = (p.tries ?? 0) + 1;
       if (p.tries >= 3) delete this.st.pending[from.id];
@@ -169,14 +169,14 @@ export class Guest {
     log("guest", "код с Mac совпал", { user: from.id });
     const mine = this.st.bots[from.id];
     if (mine) {
-      // бот уже есть: переносим его на этот Mac новым ключом — прежний Mac от бота отключается
+      // the person already has a bot: move it to this Mac with a new token, which disconnects the previous Mac
       try {
         const token = await this.api.replaceManagedBotToken(mine.id);
         return this.deliver(from as User, { id: mine.id, username: mine.username }, p.pub, token, true);
       } catch (e) {
         log("guest", "не перевыпустил ключ бота", String(e));
         if (!(e instanceof GrammyError && (e.error_code === 400 || e.error_code === 404))) return this.say(from.id, TEXT.failed);
-        delete this.st.bots[from.id]; // бота удалили в @BotFather — создаём заново
+        delete this.st.bots[from.id]; // deleted in @BotFather: create a new one
         this.save();
       }
     }
@@ -189,7 +189,8 @@ export class Guest {
     return this.say(from.id, TEXT.online, keyboard);
   }
 
-  // Telegram: человек создал бота (или у его бота сменился ключ). Закрываем бота для всех, кроме создателя, и отправляем ключ на Mac.
+  // Telegram reports a created bot (or a new token for one): close the bot to everyone but its creator and send the token
+  // to the Mac
   async created(creator: User, bot: User) {
     const had = this.st.bots[creator.id];
     const p = this.st.pending[creator.id];
@@ -197,7 +198,7 @@ export class Guest {
     this.save();
     await this.api.setManagedBotAccessSettings(bot.id, true).catch((e) => log("guest", "не закрыл бота для чужих", String(e)));
     if (!p?.ok || Date.now() - p.at > PENDING_MS) {
-      if (had?.id === bot.id) return; // сменился ключ без нового подключения — молчим
+      if (had?.id === bot.id) return; // a new token without a pending connection
       log("guest", "бот создан без Mac на связи", { user: creator.id, bot: bot.username });
       return this.instructions(creator.id);
     }
@@ -207,7 +208,7 @@ export class Guest {
   }
 
   private async deliver(owner: User, bot: { id: number; username: string; name?: string }, pub: string, token: string, moved: boolean) {
-    // токен не запоминаем даже для вычистки журналов: его вид и так скрывает scrub(), а живёт он здесь только до запечатывания
+    // the token isn't even registered for scrubbing: scrub() masks its pattern anyway, and it lives here only until sealed
     try {
       const letter: Letter = { v: 1, token, bot, owner: { id: owner.id, name: [owner.first_name, owner.last_name].filter(Boolean).join(" ") || "Telegram", username: owner.username }, manager: this.me().username, at: Date.now() };
       await postBox(this.relay, await boxId(pub), await seal(letter, pub, (await this.key()).priv));
@@ -230,7 +231,7 @@ export class Guest {
     return this.say(owner.id, text, { inline_keyboard: [[{ text: `${tr("Открыть", "Open")} @${bot.username}`, url: `https://t.me/${bot.username}` }]] });
   }
 
-  // Что видит незнакомец до «Начать»: описание бота — если владелец не задал своё.
+  // What a stranger sees before "Start": the bot description, unless the owner set one
   async describe() {
     const d = await this.api.getMyDescription().catch(() => ({ description: "x" }));
     if (!d.description) await this.api.setMyDescription(TEXT.description).catch(() => {});
@@ -254,8 +255,8 @@ export class Guest {
     await this.api.sendMessage(chat, html, { parse_mode: "HTML", link_preview_options: { is_disabled: true }, reply_markup }).catch((e) => log("guest", "ответ незнакомцу не ушёл", String(e)));
   }
 
-  // Частота: на человека — 8 в минуту и 60 в сутки; всех чужих вместе — 60 в минуту (это и ответы, и записи на диск).
-  // Сначала лимит человека: один аккаунт не выест общий. Сверх — молча мимо.
+  // 8 a minute and 60 a day per person, 60 a minute for all strangers together, which bounds both replies and disk
+  // writes. The per-person limit comes first, so one account can't use up the shared one. The rest is silently dropped.
   private allow(user: number): boolean {
     const now = Date.now();
     const h = this.hits.get(user) ?? { m: 0, mAt: now, d: 0, dAt: now };
@@ -297,7 +298,7 @@ export class Guest {
   }
 }
 
-// Ключ подписи конвертов: один на менеджера, в связке ключей; открытая часть вшивается в установщик.
+// The envelope signing key: one per manager, in the Keychain; its public part is baked into the installer
 export async function ensureManagerKey(): Promise<string> {
   let k = readSecret(MANAGER_SERVICE);
   if (!k) {
@@ -307,9 +308,8 @@ export async function ensureManagerKey(): Promise<string> {
   return k;
 }
 
-// Сборка раздачи: установщик `i` — bin/install.sh с вшитыми адресами раздачи и ящика, именем бота-менеджера и его открытым ключом —
-// и archi.tgz — только то,
-// что нужно для работы: без config.json, README и тестов.
+// Builds the distribution: the installer `i` (bin/install.sh with the distribution and box URLs, the manager bot and its
+// public key filled in) and archi.tgz with only what the host needs: no config.json, README or tests.
 export async function buildDist(out: string, manager: string) {
   const { ARCH_HOME } = await import("./config");
   const { existsSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
@@ -321,7 +321,7 @@ export async function buildDist(out: string, manager: string) {
   const sha = new Bun.CryptoHasher("sha256").update(readFileSync(tgz)).digest("hex");
   const pub = (await managerKey(await ensureManagerKey())).pub;
   const script = readFileSync(join(ARCH_HOME, "bin", "install.sh"), "utf8")
-    .replaceAll("__LANG__", config.lang === "en" ? "en" : "ru") // установщик говорит на языке этого бота — и ставит бота на нём же
+    .replaceAll("__LANG__", config.lang === "en" ? "en" : "ru") // the installer and the new bot speak this bot's language
     .replaceAll("__DIST__", config.connect!.dist.replace(/\/$/, ""))
     .replaceAll("__RELAY__", config.connect!.relay.replace(/\/$/, ""))
     .replaceAll("__MANAGER__", manager)

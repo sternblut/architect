@@ -4,32 +4,33 @@ import { dirname, join } from "node:path";
 
 export const HOME = homedir();
 export const ARCH_HOME = dirname(import.meta.dir);
-export const TEST_HOME = join(ARCH_HOME, "test"); // сессии проверок: настоящий хост их не видит
-// Папка проверок любой копии кода архитектора, не только своей: иначе общий хук примет сессию проверки из другой копии
-// за сессию владельца и пришлёт её пробные вопросы в настоящий чат.
+export const TEST_HOME = join(ARCH_HOME, "test"); // test sessions run here; the real host ignores them
+// The test folder of any Architect checkout, not only this one: otherwise the shared hook would send
+// a test session from another checkout to the real chat.
 export const isTestCwd = (cwd: string) => {
-  if (cwd === TEST_HOME || cwd.startsWith(`${TEST_HOME}/`)) return true; // «test», но не «testing»
+  if (cwd === TEST_HOME || cwd.startsWith(`${TEST_HOME}/`)) return true; // "test" but not "testing"
   const root = cwd.match(/^(.+)\/test(?:\/|$)/)?.[1];
   return !!root && existsSync(join(root, "src", "anyhook.ts"));
 };
-// Плагин Claude Code: код — в папке версии плагина, она меняется с каждым обновлением и через 14 дней удаляется. Всё
-// постоянное — состояние, журналы, настройки и рабочая папка архитектора, где живёт его разговор, — в папке данных плагина:
-// её находим по папке версии, а ARCH_DATA задают запуск хоста и хуки плагина явно. Без неё — всё рядом с кодом, как в git.
-// папка версии из маркетплейса: ~/.claude/plugins/cache/<маркетплейс>/<плагин>/<версия> → ~/.claude/plugins/data/<плагин>-<маркетплейс>
+// Installed as a plugin, the code lives in a per-version folder that every update replaces. State, logs, settings and
+// the architect's working folder go to the plugin data folder, found from the version folder or passed as ARCH_DATA
+// by the launcher and the plugin hooks. In a git clone everything stays next to the code.
+// ~/.claude/plugins/cache/<marketplace>/<plugin>/<version> → ~/.claude/plugins/data/<plugin>-<marketplace>
 export function pluginData(root: string, home = HOME): string | undefined {
   const m = root.match(/\/\.claude\/plugins\/cache\/([^/]+)\/([^/]+)\/[^/]+$/);
   return m ? join(home, ".claude", "plugins", "data", `${m[2]}@${m[1]}`.replace(/[^A-Za-z0-9_-]/g, "-")) : undefined;
 }
-// CLAUDE_PLUGIN_DATA из окружения не берём: Claude Code оставляет в нём папку чужого плагина
+// Not CLAUDE_PLUGIN_DATA: Claude Code can leave another plugin's folder in it
 export const DATA = process.env.ARCH_DATA ?? pluginData(ARCH_HOME);
 export const WORK = DATA ? join(DATA, "architect") : ARCH_HOME;
-export const STATE = process.env.ARCH_STATE_DIR ?? join(DATA ?? ARCH_HOME, "state"); // ARCH_STATE_DIR — в тестах
-export const LOGS = process.env.ARCH_LOGS_DIR ?? join(DATA ?? ARCH_HOME, "logs"); // в тестах — своя папка
+// ARCH_STATE_DIR and ARCH_LOGS_DIR are set by tests
+export const STATE = process.env.ARCH_STATE_DIR ?? join(DATA ?? ARCH_HOME, "state");
+export const LOGS = process.env.ARCH_LOGS_DIR ?? join(DATA ?? ARCH_HOME, "logs");
 export const INBOX = join(STATE, "inbox");
 export const SHOTS = join(STATE, "shots");
 export const PROJECTS = join(HOME, ".claude", "projects");
 
-// keychain — запись связки ключей с паролем посетителя (аккаунт admin) для закрытых сайтов; читает только процесс снимка.
+// keychain: the Keychain service holding a protected site's visitor password (account "admin"); only the screenshot process reads it
 export type Site = { name: string; url: string; repo?: string; keychain?: string };
 export type Config = {
   keychainService: string;
@@ -42,25 +43,23 @@ export type Config = {
   sites: Site[];
   repos: string[];
   hostingPattern: string;
-  spendPattern?: string; // свои платные команды (регулярное выражение): шлагбаум спрашивает о них как о трате
-  repoPrefix?: string; // общий префикс имён репозиториев: в карточках проект называется без него
-  monitor?: { width: number; height: number }; // окно своего монитора для снимков страниц
-  richMessages?: boolean; // rich-сообщения Bot API 10.1+; false — старый HTML
+  spendPattern?: string; // regex of paid commands; the gate asks about them as spending
+  repoPrefix?: string; // shared repo name prefix, dropped from project names in cards
+  monitor?: { width: number; height: number }; // desktop viewport for page screenshots
+  richMessages?: boolean; // Bot API 10.1+ rich messages; false falls back to HTML
   voice?: { whisper: string; model: string; language: string; vocab?: string };
-  relay?: { url: string }; // дежурный в облаке, пока Mac спит (relay/, src/relay.ts); без него бот во сне молчит
-  label: string; // служба launchd
-  setupDone?: boolean; // false — новая установка: сначала мастер настройки в боте
-  connect?: { relay: string; dist: string }; // этот бот подключает чужие Mac (менеджер личных ботов): адрес ящика и раздачи установщика
-  browserLock?: string; // общая очередь браузера на этом Mac (модуль с acquireBrowserLock)
-  lang?: "ru" | "en"; // язык владельца: всё, что бот ему показывает; без поля — русский
+  relay?: { url: string }; // cloud relay that answers while the Mac sleeps (relay/, src/relay.ts)
+  label: string; // launchd label
+  setupDone?: boolean; // false on a new install: the bot opens with the setup questions
+  connect?: { relay: string; dist: string }; // set when this bot connects other Macs: box relay URL and installer URL
+  browserLock?: string; // module exporting acquireBrowserLock: a browser queue shared on this Mac
+  lang?: "ru" | "en"; // language of everything the bot shows; Russian when unset
 };
 
-// Новая установка начинает с пустого: ни сайтов, ни репозиториев, ни правила хостинга. config.json в репозитории — общий
-// образец; своё у каждого Mac — в config.local.json рядом (git его не хранит): так «archi update» не упирается в чужой
-// config.json, а личные папки, сайты и ключи не попадают в репозиторий. ARCH_CONFIG —
-// один готовый файл целиком (проверки, менеджер раздачи).
+// config.json is the shared template. Each Mac's own settings live in config.local.json, which git ignores, so
+// "archi update" never conflicts with them. ARCH_CONFIG replaces both with one complete file (tests, the bot manager).
 export const CONFIG_FILE = process.env.ARCH_CONFIG ?? join(DATA ?? ARCH_HOME, "config.local.json");
-// свои настройки — поверх образца; мастер настройки (setupDone из образца) — только у новой установки без своих настроек
+// Local settings override the template; the template's setupDone applies only while there are no local settings
 export function mergeConfig(template: Record<string, unknown>, local?: Record<string, unknown>): Record<string, unknown> {
   if (!local) return template;
   const { setupDone: _, ...rest } = template;
@@ -69,27 +68,27 @@ export function mergeConfig(template: Record<string, unknown>, local?: Record<st
 const local = existsSync(CONFIG_FILE) ? JSON.parse(readFileSync(CONFIG_FILE, "utf8")) : undefined;
 const template = process.env.ARCH_CONFIG ? {} : JSON.parse(readFileSync(join(ARCH_HOME, "config.json"), "utf8"));
 export const config: Config = { roots: ["~"], sites: [], repos: [], githubOwner: "", hostingPattern: "", label: "app.archi.host", ...(mergeConfig(template, local) as Partial<Config>) } as Config;
-if (!config.hostingPattern) config.hostingPattern = "(?!)"; // хостинг не задан — правило не срабатывает
+if (!config.hostingPattern) config.hostingPattern = "(?!)"; // matches nothing
 config.roots = config.roots.map((r) => r.replace(/^~(?=\/|$)/, HOME));
 if (process.env.ARCH_HOOK_PORT) config.hookPort = Number(process.env.ARCH_HOOK_PORT);
-if (process.env.ARCH_LANG) config.lang = process.env.ARCH_LANG === "en" ? "en" : "ru"; // английский без своего config.json (пробы, archi)
+if (process.env.ARCH_LANG) config.lang = process.env.ARCH_LANG === "en" ? "en" : "ru";
 
-// Строка владельцу — парой на месте, по-русски и по-английски: tr("Сайт", "Site"). Язык читается при каждом вызове,
-// поэтому проверки переключают его setLang(), не перезагружая модули.
+// Owner-facing text as a Russian/English pair: tr("Сайт", "Site"). The language is read on every call,
+// so tests switch it with setLang() without reloading modules.
 export const tr = <T>(ru: T, en: T): T => (config.lang === "en" ? en : ru);
 export const setLang = (lang: "ru" | "en") => void (config.lang = lang);
 
 export function ensureDirs() {
   for (const d of [STATE, LOGS, INBOX, SHOTS]) mkdirSync(d, { recursive: true, mode: 0o700 });
   chmodSync(STATE, 0o700);
-  // рабочая папка архитектора из плагина: его правила приходят с новой версией плагина, разговор и заметки остаются
+  // Plugin install: CLAUDE.md comes with each new version; the conversation and notes stay
   if (WORK !== ARCH_HOME) {
     mkdirSync(join(WORK, "notes"), { recursive: true, mode: 0o700 });
     copyFileSync(join(ARCH_HOME, "CLAUDE.md"), join(WORK, "CLAUDE.md"));
   }
 }
 
-// Каталог журналов сессии Claude Code: все не буквенно-цифровые знаки пути заменены на «-».
+// Claude Code's transcript folder for a cwd: every non-alphanumeric character becomes "-"
 export function projectDir(cwd: string) {
   return join(PROJECTS, cwd.replace(/[^A-Za-z0-9]/g, "-"));
 }

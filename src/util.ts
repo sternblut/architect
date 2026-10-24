@@ -7,7 +7,7 @@ export function registerSecret(s: string) {
   if (s && s.length >= 8) knownSecrets.add(s);
 }
 
-// Маскирует токены и ключи перед любым выводом: журнал, Telegram, ответы инструментов.
+// Masks tokens and keys in everything the host outputs: the log, Telegram, tool results
 export function scrub(text: string): string {
   let t = text;
   for (const s of knownSecrets) t = t.split(s).join("«скрыто»");
@@ -73,7 +73,7 @@ export function writeJson(path: string, data: unknown) {
 
 export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 export const tilde = (p: string) => (p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p);
-// Длинное — с многоточием по границе слова: «Снимки главной страницы сдел…» читается как опечатка
+// Cuts at a word boundary: a word cut in half reads as a typo
 export const clip = (s: string, n: number) => {
   if (s.length <= n) return s;
   const cut = s.slice(0, n - 1);
@@ -81,7 +81,7 @@ export const clip = (s: string, n: number) => {
   return `${(word.length >= n / 2 ? word : cut).replace(/[\s,;:—–-]+$/, "")}…`;
 };
 
-// Длинное — целыми фразами, пока влезают; первая и так длиннее — по границе слова
+// Keeps whole sentences while they fit; falls back to clip() when the first one is too long
 export function sentences(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   if (t.length <= n) return t;
@@ -102,7 +102,7 @@ export function ago(ms: number): string {
   return `${Math.round(s / 86400)} дн`;
 }
 
-// «с 13:50» сегодня, «с 14 октября» — если не сегодня
+// "с 13:50" today, "с 14 октября" on an earlier day
 export function since(ms: number) {
   const d = new Date(ms);
   const day = (x: Date) => x.toLocaleDateString("ru-RU");

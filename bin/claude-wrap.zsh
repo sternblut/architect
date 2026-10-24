@@ -1,7 +1,7 @@
-# Перезапуск сессии Claude Code на месте — в той же вкладке Терминала, с тем же разговором, на нынешней версии.
-# Подключается одной строкой в ~/.zshrc:  source "<папка архитектора>/bin/claude-wrap.zsh"
-# Архитектор пишет номер разговора (и, если нужно, реплику) в $dir/<pid оболочки> и завершает процесс claude; оболочка
-# сразу поднимает `claude --resume <номер> [реплика]` здесь же. Подкоманды (agents, attach, logs, -p и т. п.) идут как есть.
+# Lets the architect restart a Claude Code session in place: same Terminal tab, same conversation, current version.
+# Enable with one line in ~/.zshrc:  source "<architect folder>/bin/claude-wrap.zsh"
+# The architect writes the session id (and optionally a message) to $dir/<shell pid> and ends the claude process;
+# the shell then runs `claude --resume <id> [message]` right here. Subcommands (agents, attach, logs, -p, ...) pass through.
 claude() {
   case "$1" in
     agents|attach|logs|stop|kill|rm|respawn|update|upgrade|install|doctor|mcp|plugin|plugins|auth|setup-token|purge|ultrareview|import|auto-mode|gateway|remote-control|-p|--print|-v|--version|-h|--help|--bg|--background)
@@ -10,11 +10,11 @@ claude() {
   local dir="${CLAUDE_RESTART_DIR:-$HOME/.claude/architect/restart}"
   command mkdir -p -- "$dir"
   local flag="$dir/$$" mark="$dir/$$.tab"
-  print -r -- "v2 $PWD" >| "$mark"   # v2 — умеет подниматься с репликой; по метке хост знает, что можно передать
+  print -r -- "v2 $PWD" >| "$mark"   # v2: can resume with a message; the host checks this mark
   command claude "$@"
   local rc=$?
-  # в файле: первая строка — номер разговора, дальше — необязательная реплика владельца (или /goal …), с которой
-  # разговор поднимается: так слово владельца из Telegram приходит сессии его репликой, в её же вкладке
+  # First line: session id. The rest: an optional message (or /goal …) to resume with, so the owner's words from
+  # Telegram arrive as their own message, in the same tab.
   while [[ -f $flag ]]; do
     local sid prompt
     { IFS= read -r sid; prompt=$(command cat) } < "$flag"
@@ -26,8 +26,8 @@ claude() {
   return $rc
 }
 
-# «archi adopt <имя>» — перевести сессию из старой вкладки (открытой до этой обёртки) сюда: старый процесс
-# завершается, здесь поднимается тот же разговор, и дальше архитектор перезапускает её с телефона. Остальное — как есть.
+# "archi adopt <name>": move a session from a tab opened before this wrapper into this one, so the architect can
+# restart it from the phone. Other archi commands pass through.
 archi() {
   if [[ $1 == adopt ]]; then
     shift

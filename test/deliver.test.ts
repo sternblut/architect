@@ -1,7 +1,6 @@
-// Доставка слова сессии не плодит копии и не выбивает её из вкладки Терминала.
-// Два слова подряд одной фоновой сессии, открытой через `claude attach`: раньше её останавливали и поднимали
-// наперегонки, вкладка показывала «Session has exited», а Claude Code заводил копии.
-// Здесь вместо claude и ps — заглушки с состоянием в файле: они ведут себя как Claude Code 2.1.3xx.
+// Delivering a message neither starts copies of a session nor kicks it out of its Terminal tab, including two messages
+// in a row to a background session open through `claude attach`. claude and ps are stubs with state in a file that
+// behave like Claude Code 2.1.3xx.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,22 +77,22 @@ beforeEach(() => {
 
 const set = (patch: Partial<Fake>) => writeFileSync(FAKE, JSON.stringify({ ...fake(), ...patch }));
 
-describe("слово простаивающей фоновой сессии", () => {
-  test("будит тот же разговор: остановка, потом подъём с текстом, без копии", async () => {
+describe("a message to an idle background session", () => {
+  test("wakes the same conversation: stop, then resume with the text, no copy", async () => {
     const res = await deliver(row(), "Посмотри итоги недели");
     expect(res.ok).toBe(true);
     expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 Посмотри итоги недели"]);
     expect(fake().sessions.length).toBe(1);
   });
 
-  test("открытую во вкладке через attach не трогает: вкладка не слетает, слово идёт сообщением", async () => {
+  test("leaves a session open through attach alone: the tab stays, the message needs SendMessage", async () => {
     set({ attached: ["a1b2c3d4"] });
     const res = await deliver(row(), "Посмотри итоги недели");
     expect(res).toMatchObject({ ok: false, how: "needs-sendmessage" });
     expect(fake().calls).toEqual([]);
   });
 
-  test("не остановилась — не поднимает заново: иначе Claude Code завёл бы копию", async () => {
+  test("doesn't resume a session that didn't stop, which would start a copy", async () => {
     set({ stuck: ["a1b2c3d4"] });
     const res = await deliver(row(), "Посмотри итоги недели");
     expect(res.ok).toBe(false);
@@ -101,7 +100,7 @@ describe("слово простаивающей фоновой сессии", ()
     expect(fake().sessions.length).toBe(1);
   }, 30_000);
 
-  test("копию, если Claude Code её всё же завёл, сразу останавливает и честно говорит, что не передано", async () => {
+  test("stops a copy Claude Code started anyway and reports the message as not delivered", async () => {
     set({ copy: true });
     const res = await deliver(row(), "Посмотри итоги недели");
     expect(res.ok).toBe(false);
@@ -111,7 +110,7 @@ describe("слово простаивающей фоновой сессии", ()
     expect(copy.pid).toBeUndefined();
   });
 
-  test("два слова подряд идут по очереди: второе видит, что сессия уже работает, и не перезапускает её", async () => {
+  test("two messages in a row go one at a time: the second sees the session working and doesn't restart it", async () => {
     const idle = row();
     const [a, b] = await Promise.all([deliver(idle, "голосовое"), deliver(idle, "/goal довести фичу")]);
     expect(a.ok).toBe(true);

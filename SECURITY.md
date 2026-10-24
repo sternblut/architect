@@ -1,7 +1,5 @@
 # Security
 
-Architect runs commands on your Mac on your behalf, so security reports matter here.
-
 ## Reporting
 
 Report privately through GitHub: **Security → Report a vulnerability**. Please do not open a public issue.

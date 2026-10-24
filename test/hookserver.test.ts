@@ -1,4 +1,4 @@
-// Хост для всех сессий Mac (/hook/any/*) без Claude: присутствие владельца, удержание, возврат к Mac, очередь ответов.
+// The hook server for all sessions on the Mac (/hook/any/*), without Claude: presence, holds, return to the Mac, queued answers.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ process.env.ARCH_LOGS_DIR = dir;
 process.env.ARCH_HOOK_PORT = "47397";
 process.env.ARCH_FORCE_PRESENCE = "away";
 const { ensureDirs, STATE, config } = await import("../src/config");
-config.hookPort = 47397; // файлы тестов делят процесс: порт задаём явно, настоящий хост (47300) не трогаем
+config.hookPort = 47397; // set explicitly, away from the real host (47300)
 ensureDirs();
 writeFileSync(join(STATE, "owner.json"), JSON.stringify({ id: 1 }));
 const { startHookServer } = await import("../src/hookserver");
@@ -37,11 +37,9 @@ const approvals = {
 const server = startHookServer(SECRET, approvals as never, {
   label: (s) => `«${s}»`,
   threadFor: async () => undefined,
-  turnEnded: async (_s, _c, t) => void posts.push(`turn:${t}`),
   sessionQuestion: async (_s, _c, t) => void posts.push(`question:${t}`),
   workerTurn: async (_s, _c, t) => void posts.push(`worker:${t}`),
   alert: async (_s, _c, t) => void alerts.push(t),
-  post: async (_s, _c, md) => (posts.push(`post:${md}`), [1]),
   markHooked: () => {},
   permissionDecided: () => {},
 });
@@ -64,28 +62,28 @@ beforeEach(() => {
   process.env.ARCH_FORCE_PRESENCE = "away";
 });
 
-describe("доступ", () => {
-  test("без секрета и с чужим Host — 403", async () => {
+describe("access", () => {
+  test("no secret or a foreign Host header: 403", async () => {
     expect((await call("/hook/any/permission", base, { secret: "x" })).status).toBe(403);
     expect((await call("/hook/any/permission", base, { host: "evil.example:47397" })).status).toBe(403);
   });
 });
 
-describe("разрешения любой сессии", () => {
-  test("владелец за Mac — сразу «решай в терминале», в Telegram ничего", async () => {
+describe("permissions of any session", () => {
+  test("owner at the Mac: the terminal decides at once, nothing in Telegram", async () => {
     process.env.ARCH_FORCE_PRESENCE = "present";
     const r: any = await (await call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "rm -rf build-old" } })).json();
     expect(r).toEqual({});
     expect(asked.length).toBe(0);
   });
 
-  test("отошёл — кнопка в Telegram, «Разрешить» → allow", async () => {
+  test("owner away: a button in Telegram, Allow → allow", async () => {
     const r: any = await (await call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "rm -rf build-old" } })).json();
     expect(asked).toEqual(["rm -rf build-old"]);
     expect(r.hookSpecificOutput.decision.behavior).toBe("allow");
   });
 
-  test("вернулся к Mac, пока ждали — запрос уходит обратно в терминал", async () => {
+  test("back at the Mac while waiting: the request returns to the terminal", async () => {
     confirmReply = "wait";
     const p = call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "git push origin main" } }).then((x) => x.json());
     await Bun.sleep(100);
@@ -94,62 +92,62 @@ describe("разрешения любой сессии", () => {
   });
 });
 
-describe("вопрос в конце хода", () => {
-  test("обычная сессия ждёт — ход держится, ответ владельца уходит репликой", async () => {
+describe("a question at the end of a turn", () => {
+  test("a plain session waits: the turn is held and the owner's answer goes back as a message", async () => {
     const p = call("/hook/any/stop", { ...base, session_id: "s2", last_assistant_message: "Какой вариант шапки выбрать?" }).then((x) => x.json());
     await Bun.sleep(150);
     expect(stopHolds.has("s2")).toBe(true);
-    expect(posts.some((x) => x.startsWith("question:Какой вариант шапки"))).toBe(true); // вопрос — архитектору на суждение, не сырой текст владельцу
+    expect(posts.some((x) => x.startsWith("question:Какой вариант шапки"))).toBe(true); // to the architect, not raw to the owner
     stopHolds.answer("s2", "второй");
     const r: any = await p;
     expect(r.decision).toBe("block");
     expect(r.reason).toContain("второй");
   });
 
-  test("отчёт без вопроса — тишина: не держим и никуда не пересылаем", async () => {
+  test("a report without a question: not held, not forwarded", async () => {
     const r: any = await (await call("/hook/any/stop", { ...base, session_id: "s3", last_assistant_message: "Проверено: тесты проходят, ветка запушена." })).json();
     expect(r).toEqual({});
     expect(posts.some((x) => x.includes("Проверено"))).toBe(false);
   });
 
-  test("ошибка лимита или API — тишина, даже если похожа на вопрос", async () => {
+  test("a limit or API error stays silent even when it looks like a question", async () => {
     const r: any = await (await call("/hook/any/stop", { ...base, session_id: "s3b", last_assistant_message: "You've hit your weekly limit · resets Oct 24, 3am. Continue?" })).json();
     expect(r).toEqual({});
     expect(stopHolds.has("s3b")).toBe(false);
     expect(posts.some((x) => x.includes("weekly limit"))).toBe(false);
   });
 
-  test("ответ для занятой сессии ждёт в очереди и уходит на её остановке", async () => {
+  test("an answer for a busy session waits in the queue and goes at its stop", async () => {
     outbox.push("s4", "сделай вариант Б");
     const r: any = await (await call("/hook/any/stop", { ...base, session_id: "s4", last_assistant_message: "Шаг 3 сделан." })).json();
     expect(r.decision).toBe("block");
     expect(r.reason).toContain("сделай вариант Б");
   });
 
-  test("сессия с целью: первый вопрос — не держим; тот же вопрос снова (крутится) — держим до ответа", async () => {
+  test("a goal session: the first question isn't held, the same question again (spinning) is held until answered", async () => {
     const q = { ...base, session_id: "s5", stop_hook_active: true, last_assistant_message: "Жду вашего «принято»?" };
     expect(await (await call("/hook/any/stop", q)).json()).toEqual({});
     const p = call("/hook/any/stop", q).then((x) => x.json());
     await Bun.sleep(150);
     expect(stopHolds.has("s5")).toBe(true);
-    fireReturn(); // вернулся к Mac — отпускаем
+    fireReturn(); // back at the Mac: release
     expect(await p).toEqual({});
   });
 });
 
-describe("бриф и один голос", () => {
-  test("запрос разрешения уходит с инструментом, входом и папкой — из них собирается бриф", async () => {
+describe("brief and alerts", () => {
+  test("a permission request carries the tool, input and folder the brief is built from", async () => {
     await (await call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "rm -rf build-old", description: "Remove old build" } })).json();
     expect(briefs[0]).toEqual({ tool: "Bash", cwd: dir, input: { command: "rm -rf build-old", description: "Remove old build" } });
   });
 
-  test("«Сначала покажи» — запрос снят с просьбой для сессии, а не с отказом", async () => {
+  test("Show me first withdraws the request with a note for the session, not a refusal", async () => {
     confirmReply = { tell: "сначала сними кандидата" };
     const r: any = await (await call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "git push origin main" } })).json();
     expect(r.hookSpecificOutput.decision).toEqual({ behavior: "deny", message: "сначала сними кандидата" });
   });
 
-  test("ход оборвался ошибкой API — тревога архитектору с типом ошибки; упор в лимит — никому", async () => {
+  test("a turn cut by an API error alerts the architect with the error type; a rate limit alerts nobody", async () => {
     writeFileSync(join(STATE, "workers.json"), JSON.stringify({ w1: { id: "w1", sessionId: "w1", name: "w", cwd: dir, task: "t", model: "opus", startedAt: 0 } }));
     await (await call("/hook/stopfail", { ...base, session_id: "w1", error: "rate_limit", last_assistant_message: "API Error: Rate limit reached" })).json();
     expect(alerts).toEqual([]);
@@ -160,7 +158,7 @@ describe("бриф и один голос", () => {
 });
 
 describe("archi ask", () => {
-  test("кнопка владельцу; ответ — в теле", async () => {
+  test("asks the owner with a button and returns the answer in the body", async () => {
     confirmReply = "no";
     const r: any = await (await call("/hook/ask", { source: "скрипт", action: "git push origin build:main" })).json();
     expect(r.decision).toBe("no");

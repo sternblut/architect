@@ -1,7 +1,6 @@
-// Понимание сессий: состояние каждой — так, как понял бы владелец, читая её историю, а не по последней фразе.
-// Эвристика записывала в «ждут вашего решения» сессии, которые давно закончили и по кругу повторяли «жду»,
-// а необязательное «пришлите запись, если есть» принимала за вопрос. Нужна логика, которая учитывает контекст.
-// Модель зовётся только на настоящих переменах: повторы «жду» суть не меняют, и ключ кэша от них не зависит.
+// Session understanding: each session's state as the owner would judge it from the whole history, not the last line.
+// Heuristics alone take a finished session repeating "waiting" for a pending decision, and an optional "send the
+// recording if you have one" for a question. The model is called only on real changes: repeats don't change the key.
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +10,9 @@ import { clip, hhmm, log, readJson, writeJson } from "./util";
 
 export type Understanding = {
   state: "needs_owner" | "accept" | "working" | "paused";
-  spinning: boolean; // по кругу повторяет одно и то же
-  doing: string; // что сделано или что делает — его словами
-  needs: string; // только для needs_owner: что именно нужно от владельца
+  spinning: boolean; // repeating itself
+  doing: string; // what it did or is doing, in plain words
+  needs: string; // needs_owner only: what exactly the owner must do
   key: string;
   at: number;
 };
@@ -47,8 +46,8 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-// Ход сессии для модели: цель, что происходит с процессом, разговор с повторами, схлопнутыми в одну строку.
-// key — то же без счётчиков повторов и времени «сколько назад»: новый «жду» не меняет суть, модель не зовём.
+// The session's course for the model: the goal, the process state and the conversation, repeats collapsed into one
+// line. key is the same without repeat counts and times, so one more "waiting" doesn't call the model.
 export function digestOf(r: AgentRow): { text: string; key: string } {
   const entries = readTail(transcriptPath(r.cwd, r.sessionId!), 600_000);
   const d = sessionDigest(r);
@@ -56,7 +55,7 @@ export function digestOf(r: AgentRow): { text: string; key: string } {
   for (const c of conversationRows(entries, 80)) {
     const base = `${c.who === "owner" ? "Владелец" : c.who === "session" ? "Другая сессия" : c.who === "tool" ? "  ↳" : "Claude"}: ${clip(c.text.replace(/\s+/g, " "), c.who === "tool" ? 120 : 500)}`;
     const prev = rows.at(-1);
-    // одинаковые реплики подряд — одной строкой со счётчиком: так модель видит холостой ход, а ключ от счётчика не зависит
+    // identical messages in a row become one line with a count: the model sees the spinning, the key ignores the count
     if (prev && c.who === "claude" && prev.base.slice(0, 70) === base.slice(0, 70)) {
       prev.n++;
       prev.last = c.ts;
@@ -76,20 +75,19 @@ export function digestOf(r: AgentRow): { text: string; key: string } {
   ]
     .filter(Boolean)
     .join("\n");
-  // правила в ключе: поменялись слова суждения — после выпуска сессии судятся заново, а не держат старые строки неделями
+  // the rules are part of the key, so new rules re-judge every session instead of keeping old lines for weeks
   const key = Bun.hash([RULES, ...head, ...talk.map((x) => x.base)].join("\n")).toString(36);
   return { text, key };
 }
 
-// Кончился лимит Claude или он не пускает — суждения ждут. Раньше круг каждые 2 минуты поднимал Claude на каждую
-// сессию и получал отказ, до 60 раз в час. Лимит — до его сброса, прочие отказы — 10 минут.
+// While the Claude limit is out or Claude refuses, judgments wait: until the reset for a limit, 10 minutes otherwise
 let pausedUntil = 0;
 const failed = (e: unknown) => {
   pausedUntil = Math.max(pausedUntil, Date.now() + 10 * 60_000);
   log("understand", `суждение не получилось, следующее — не раньше ${hhmm(new Date(pausedUntil))}`, String(e));
 };
 
-// Суждение модели по одной сессии. Без инструментов и без записи разговора на диск.
+// The model's judgment of one session, with no tools and no transcript written to disk
 async function judge(text: string): Promise<Omit<Understanding, "key" | "at"> | undefined> {
   const q = query({
     prompt: text,
@@ -106,20 +104,20 @@ async function judge(text: string): Promise<Omit<Understanding, "key" | "at"> | 
 }
 
 const busy = (r: AgentRow) => r.status === "busy" || r.state === "working";
-// за 10 минут цель не раз не дала ей остановиться — холостой ход
+// A /goal kept it from stopping more than once in 10 minutes: spinning
 export const looping = (r: AgentRow) => spinCount(readTail(transcriptPath(r.cwd, r.sessionId!), 300_000), 10 * 60_000) >= 2;
 
-// Что известно о сессии сейчас; undefined — ещё не понята (тогда работает прежняя эвристика).
+// The current judgment of a session; undefined until there is one, and the heuristics apply
 export const understood = (sessionId?: string) => (sessionId ? cache[sessionId] : undefined);
 
-// Понять сессии, у которых изменилась суть. По одной: модель — дорогой ресурс, спешить незачем.
+// Judges sessions whose course has changed, one at a time: the model is expensive and there is no hurry
 let running = false;
 export async function refresh(rows: AgentRow[]) {
   if (running) return;
   running = true;
   try {
-    // работающих не судим (видно по процессу, модель на каждом их шаге — пустая трата лимита) — кроме тех,
-    // кого по кругу гоняет цель /goal: процесс «занят», а по сути работа сделана и сессия повторяет «жду»
+    // skip working sessions (the process shows it, and judging every step wastes the limit), except those a /goal
+    // keeps spinning: busy on paper, done in fact
     for (const r of rows.filter((x) => x.sessionId && x.pid && (!busy(x) || looping(x)))) {
       if (Date.now() < pausedUntil) break;
       const { text, key } = digestOf(r);
@@ -134,8 +132,8 @@ export async function refresh(rows: AgentRow[]) {
   }
 }
 
-// Суждение сейчас — и о занятых: утренний итог пишет «что сделала ночью», а у работающей сессии понимание могло
-// остаться вечерним: «упёрлась в лимит», хотя она давно снова работает.
+// Judges now, busy sessions included: the morning summary says what each did overnight, and a working session's
+// judgment could still be from the evening
 export async function judgeNow(rows: AgentRow[]) {
   for (const r of rows.filter((x) => x.sessionId)) {
     if (Date.now() < pausedUntil) break;

@@ -1,5 +1,6 @@
-// Решения владельца: «да/нет» на необратимое и ответы на вопросы сессий. Кнопки одноразовые: после решения гаснут на месте с подписью.
-// Запрос разрешения — бриф решения (brief.ts): что изменится, можно ли вернуть, совет архитектора; сама команда — под «Подробнее».
+// The owner's decisions: yes/no on irreversible steps and answers to sessions' questions. Buttons work once and then
+// turn into a caption in place. A permission request is a decision brief (brief.ts): what changes, whether it can be
+// undone, a recommendation; the command itself goes under "Details".
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { decisionBrief, sessionName, type Brief, type More } from "./brief";
@@ -9,28 +10,26 @@ import type { Button, Incoming, Telegram } from "./telegram";
 import { clip, hhmm, log, randomId, readJson, scrub, writeJson } from "./util";
 
 export type Question = { question: string; header?: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
-// «Сначала покажи» / «Сначала объясни»: запрос снят, сессии — tell, она спросит снова
+// { tell }: "Show me first" / "Explain first" withdraws the request; the session gets tell and asks again
 export type Decision = "yes" | "no" | "timeout" | { tell: string };
 
 type Pending =
   | { kind: "confirm"; resolve: (v: Decision) => void; messageId: number; md: string; more?: More; deploy?: boolean; rule?: Brief["rule"]; action: string; source: string; summary: string; since: number }
   | { kind: "question"; resolve: (v: string | null) => void; messageId: number; md: string; q: Question; picked: Set<number>; source: string; summary: string; since: number };
 
-const done = (label: string): Button[][] => [[{ text: label, disabled: true }]]; // погасшая кнопка-подпись вместо прежних
-const plain = (md: string) => md.replace(/\\(.)/g, "$1"); // для «Пульта»: без экранирования Markdown
-const RECOMMENDED = /\s*\((recommended|рекомендую|рекомендуется|советую)\)\s*$/i; // так AskUserQuestion помечает совет сессии
+const done = (label: string): Button[][] => [[{ text: label, disabled: true }]]; // a disabled caption replaces the buttons
+const plain = (md: string) => md.replace(/\\(.)/g, "$1"); // unescaped, for the dashboard
+const RECOMMENDED = /\s*\((recommended|рекомендую|рекомендуется|советую)\)\s*$/i; // how AskUserQuestion marks a recommendation
 const quote = (s: string) => tr(`«${s}»`, `“${s}”`);
 
-// Цветом выделена только кнопка, к которой склоняется совет; без совета все кнопки нейтральные — красная «Отклонить» читалась бы как тревога.
-// «Да» — глаголом из первой строки («Выложить», «Удалить»): нажимая, он видит, что делает;
-// первая строка не с глагола — «Разрешить». По-английски глагол — из списка: описание («Running tests») глаголом не станет.
+// Only the button the advice leans to is colored; without advice all stay neutral, since a red "Decline" reads as an
+// alarm. "Yes" takes the verb of the first line ("Deploy", "Delete"), so the owner sees what the tap does; otherwise it
+// is "Allow". English verbs come from a list, so a description like "Running tests" never becomes a button.
 const VERBS_EN =
   /^(Add|Apply|Approve|Archive|Build|Change|Clean|Clear|Clone|Commit|Copy|Create|Delete|Deploy|Download|Edit|Execute|Export|Fetch|Import|Install|Kill|Launch|Merge|Move|Open|Overwrite|Publish|Pull|Push|Release|Reload|Remove|Rename|Reset|Restart|Restore|Revert|Run|Send|Set|Spend|Start|Stop|Sync|Tag|Trust|Update|Upload|Write)(?=\s|$)/;
 const yesVerb = (head: string) => tr(head.match(/^(\p{Lu}\p{Ll}+(?:ть|ти|чь)(?:ся)?)(?=\s|$)/u)?.[1], head.match(VERBS_EN)?.[1]);
-// own — глагол действия, написанного словами (свои инструменты архитектора): «Остановить «X»?» — кнопка «Остановить»,
-// а не «Разрешить»
-// Правила владельца «без вопросов»: кнопка на карточке — его «да» заранее для того же вида действий в том же проекте,
-// чтобы привычные действия не ждали подтверждения каждый раз.
+// The owner's "without asking" rules: a button on the card says yes in advance to the same kind of action in the
+// same project
 export type Rule = NonNullable<Brief["rule"]> & { at: number };
 const RULES = () => join(STATE, "rules.json");
 export const rules = {
@@ -49,6 +48,7 @@ export const ruleText = (r: NonNullable<Brief["rule"]>) =>
 const always = (r: NonNullable<Brief["rule"]>) =>
   r.kind === "deploy" ? tr(`Выкладывать ${r.project} без вопросов`, `Deploy ${r.project} without asking`) : r.kind === "delete" ? tr(`Удалять в ${quote(r.project)} без вопросов`, `Delete in ${quote(r.project)} without asking`) : tr(`Обновлять ${quote(r.project)} без вопросов`, `Update ${quote(r.project)} without asking`);
 
+// own: the verb of an action already in words (the architect's own tools): "Stop “X”?" gets "Stop", not "Allow"
 function confirmButtons(id: string, b?: Brief, own?: string): Button[][] {
   const lean = b?.lean;
   const verb = (b && yesVerb(b.head)) || own;
@@ -63,24 +63,23 @@ function confirmButtons(id: string, b?: Brief, own?: string): Button[][] {
   return rows;
 }
 
-// заголовок раскрывашки — по смыслу: у выкладки внутри то, что изменится
+// A collapsible block titled by what is inside
 const more = (parts: string[], title = tr("Подробнее", "Details")) => (parts.length ? `\n\n<details><summary>${title}</summary>\n\n${parts.join("\n\n")}\n\n</details>` : "");
 
-// Первая строка — что изменится (одна строка жирным на всё сообщение), ниже — где, что и можно ли вернуть, отдельным абзацем — совет.
-// Первая строка — вопросом, у остальных — точка: на экране блокировки iOS склеивает строки, и без знаков выходило
-// «Выложить Маяк 3 ссылки «Блога» ведут… Обновится beacon.example.com Прежнюю версию…».
+// The first line says what changes and is the only bold one; below it where, what and whether it can be undone; the
+// advice is its own paragraph. The first line ends with "?", the rest with a period: the iOS lock screen joins lines.
 const ask = (x: string) => (!x || /[.?!…:]$/.test(x) ? x : `${x}?`);
 const dot = (x: string) => (!x || /[.?!…:]$/.test(x) ? x : `${x}.`);
 export function briefMd(b: Brief) {
-  // совет тем же глаголом, что на кнопке: «Советую выложить» под [Выложить], а не «разрешить» без такой кнопки
+  // the advice uses the button's verb: "I'd deploy it" under [Deploy], not "allow"
   const verb = yesVerb(b.head);
   const advice = b.advice && verb ? b.advice.replace(tr(/^Советую разрешить/, /^I’d allow it/), tr(`Советую ${verb.toLowerCase()}`, `I’d ${verb.toLowerCase()} it`)) : b.advice;
-  // вопросом — только просьба глаголом («Выложить Маяк?»); «Запускаю тесты» — описание сессии, ему — точка
+  // "?" only after a request with a verb ("Deploy Beacon?"); a description ("Running tests") gets a period
   return `${[`**${verb ? ask(b.head) : dot(b.head)}**`, ...b.lines.map(dot)].join("\n")}${advice ? `\n\n${dot(advice)}` : ""}${more(b.details ?? [], b.deploy ? tr("Что изменится", "What changes") : tr("Подробнее", "Details"))}`;
 }
 
-// Действие, уже написанное словами (свои инструменты архитектора, `archi ask`, доверие к папке): первая строка — что, ниже — почему спрашиваю.
-// Длинное продолжение (задача сессии, условие цели) — под «Подробнее», короткое — на виду.
+// An action already in words (the architect's own tools, `archi ask`, folder trust): the first line says what, then why.
+// A long remainder (a session's task, a goal) goes under "Details".
 function wordsMd(source: string, action: string, reason?: string) {
   const [first, ...rest] = scrub(action).trim().split("\n");
   const tail = mdEsc(clip(rest.join("\n").trim(), 1500));
@@ -124,12 +123,12 @@ export class Approvals {
     });
   }
 
-  // Текст владельца как ответ: свой вариант на вопрос или запасное «да abc123» / «нет abc123».
+  // The owner's text as an answer: a free-form answer to a question, or the fallback "yes abc123" / "no abc123"
   takeText(m: Incoming): boolean {
-    if (m.forwardedFrom) return false; // пересланное — чужие слова, решением не считается
+    if (m.forwardedFrom) return false; // forwarded text is someone else's words, never a decision
     const t = m.text.trim();
     const fallback = t.match(/^(да|нет|yes|no)\s+([a-z0-9]{6,10})$/i);
-    // из очереди облака «да код» не разрешает: решения — только кнопкой из своего опроса Telegram
+    // "yes <id>" queued by the cloud relay allows nothing: decisions come only through the host's own Telegram polling
     if (fallback && !m.relayed) {
       const p = this.pending.get(fallback[2]);
       if (p?.kind === "confirm") {
@@ -137,7 +136,7 @@ export class Approvals {
         return true;
       }
     }
-    // свой вариант — только ответом (свайп) на сам вопрос: постороннее сообщение рядом с вопросом ответом не считается
+    // a free-form answer only as a reply (swipe) to the question itself; a message next to it doesn't count
     if (!t || !m.replyToId) return false;
     for (const [id, p] of this.pending)
       if (p.kind === "question" && m.replyToId === p.messageId) {
@@ -147,19 +146,16 @@ export class Approvals {
     return false;
   }
 
-  get openCount() {
-    return this.pending.size;
-  }
-
-  // Что сейчас ждёт решения владельца — для «Пульта».
-  // final — необратимое («Вернуть нельзя» в брифе): решать только из самого брифа, не одним касанием из «Пульта»
+  // What waits for the owner's decision, for the dashboard. final: irreversible ("Can’t be undone" in the brief), so it
+  // is decided only from the brief itself, never with one tap on the dashboard.
   list(): { kind: "confirm" | "question"; source: string; summary: string; since: number; messageId: number; final: boolean }[] {
     const final = tr(/Вернуть (нельзя|можно не всё)/, /Can’t be undone|Only partly reversible/);
     return [...this.pending.values()].map((p) => ({ kind: p.kind, source: p.source, summary: p.summary, since: p.since, messageId: p.messageId, final: p.kind === "confirm" && final.test(p.md) }));
   }
 
-  // tool/input/cwd — запрос инструмента сессии: из них собирается бриф. Без них action — уже слова (свои инструменты архитектора, archi ask).
-  // shots — снимки кандидата от самой сессии: к выкладке они идут над брифом; worker — своя рабочая сессия (её можно попросить их снять).
+  // tool/input/cwd: the session's tool request, the brief is built from it; without them action is already words (the
+  // architect's own tools, archi ask). shots: the session's candidate shots, sent above a deploy brief. worker: one of
+  // the architect's sessions, which can be asked for shots.
   async confirm(o: {
     source: string;
     action: string;
@@ -178,19 +174,19 @@ export class Approvals {
     const brief = o.tool
       ? await decisionBrief({ tool: o.tool, input: o.input ?? {}, cwd: o.cwd ?? ARCH_HOME, source: o.source, shots: o.shots?.length, worker: o.worker, inTopic: !!o.threadId }).catch((e) => void log("approvals", "бриф не собрался — шлю словами", String(e)))
       : undefined;
-    if (o.signal?.aborted) return "timeout"; // пока собирали бриф, вопрос снят — не тревожим
-    // проверено, что ничего не изменится (push в ветку, где всё уже есть), — владельца не тревожим; push в main сюда не попадает
+    if (o.signal?.aborted) return "timeout"; // withdrawn while the brief was built
+    // a verified no-op (a push to a branch that already has everything) doesn't bother the owner; a push to main never gets here
     if (brief?.noop) {
       audit({ id, type: "auto", source: o.source, action: o.action, brief: brief.head, decision: "yes" });
       return "yes";
     }
-    // снимки кандидата — над брифом: решение принимают, глядя на них, а кнопки остаются под рукой внизу
+    // candidate shots go above the brief, so its buttons stay at the bottom
     if (brief?.deploy && o.shots?.length)
       await this.tg.sendAlbum(o.shots.map((path, i) => ({ path, caption: i ? undefined : tr("Так станет после выкладки — снимки сессии", "How it will look after the deploy — the session’s screenshots") })), { threadId: o.threadId });
     const md = brief ? briefMd(brief) : wordsMd(o.source, o.action, o.reason);
-    // «жду выкладку» — только там, где конвейер потом и правда ждёт наблюдатель (watcher.onApproved)
+    // "waiting for the deploy" only where the watcher really waits for a pipeline (watcher.onApproved)
     const deploy = !!brief?.deploy && /git\b.*\bpush\b|gh\s+(pr\s+merge|workflow\s+run|run\s+rerun)/.test(o.action);
-    // правило владельца «без вопросов» на этот вид действий в этом проекте — карточка сразу решённой и без звука
+    // a "without asking" rule for this kind of action in this project: the card arrives decided, silently
     const standing = brief?.rule && rules.match(brief.rule);
     if (standing) {
       const label = tr(`Разрешено вашим правилом от ${day(standing.at)}`, `Allowed by your rule from ${day(standing.at)}`);
@@ -215,8 +211,8 @@ export class Approvals {
     });
   }
 
-  // Карточки, открытые до перезапуска хоста, — уже ничьи: их ответ ждал прежний процесс. Иначе после перезапуска
-  // карточка остаётся с живыми на вид кнопками. Гасим их честной подписью.
+  // Cards still open from before a host restart belong to nobody: the old process was waiting for them. They get an
+  // honest caption instead of buttons that look alive.
   private openCards = (): Record<string, string> => readJson<Record<string, string>>(join(STATE, "open-cards.json"), {});
   private keepOpen(messageId: number, md?: string) {
     const all = this.openCards();
@@ -224,7 +220,7 @@ export class Approvals {
     else all[messageId] = md;
     writeJson(join(STATE, "open-cards.json"), all);
   }
-  // зовёт хост один раз при запуске (src/main.ts)
+  // Called once at startup (src/main.ts)
   async expireOld() {
     const old = Object.entries(this.openCards());
     if (!old.length) return;
@@ -232,8 +228,8 @@ export class Approvals {
     for (const [id, md] of old) await this.tg.edit(Number(id), md, { buttons: done(tr("Бот перезапускался — этот запрос больше не действует", "The bot restarted — this request no longer applies")) }).catch(() => {});
   }
 
-  // Выкладка кончилась — подпись карты говорит чем: «Разрешено в 11:43 — выложено в 11:51», а не «жду выкладку»
-  // до вечера. tail пустой — наблюдатель за ней не следит, ждать нечего.
+  // When the deploy ends the card says how ("Allowed at 11:43 — deployed at 11:51") rather than "waiting for the
+  // deploy" forever. An empty tail means the watcher isn't following it.
   private deployCards = new Map<string, { messageId: number; md: string; label: string }>();
   settleDeploy(action: string, tail: string) {
     const c = this.deployCards.get(action);
@@ -247,7 +243,7 @@ export class Approvals {
     if (!p || p.kind !== "confirm") return;
     this.pending.delete(id);
     this.keepOpen(p.messageId);
-    // к выкладке подпись говорит, что дальше: конвейер дождётся наблюдатель и пришлёт итог со снимком сайта
+    // for a deploy the caption says what comes next: the watcher waits for the pipeline and sends a screenshot
     const at = tr(`в ${hhmm()}`, `at ${hhmm()}`);
     const said = v === "yes" ? tr("Разрешено", "Allowed") : v === "no" ? tr("Отклонено", "Declined") : tr("Время вышло", "Timed out");
     const base = `${said} ${at}${forever ? tr(" и дальше без вопросов", ", and from now on without asking") : ""}`;
@@ -258,7 +254,7 @@ export class Approvals {
     p.resolve(v === "more" ? { tell: p.more!.tell } : v);
   }
 
-  // Задаёт вопросы по одному; возвращает {текст вопроса: ответ} или null, если ответа не было.
+  // Asks the questions one by one; returns {question: answer}, or null when one went unanswered
   async ask(o: { source: string; questions: Question[]; timeoutMs: number; signal?: AbortSignal; threadId?: number; abortNote?: string }): Promise<Record<string, string> | null> {
     const answers: Record<string, string> = {};
     for (const q of o.questions) {
@@ -269,15 +265,14 @@ export class Approvals {
     return answers;
   }
 
-  // Вопрос — первой строкой, жирным; ниже совет сессии, кто спрашивает и что можно ответить своими словами.
-  // Варианты — только кнопками; их пояснения, если есть, — под «Подробнее».
+  // The question in bold, then the session's advice and who asks. Options are buttons only; their descriptions go
+  // under "Details".
   private async askOne(source: string, q: Question, timeoutMs: number, signal?: AbortSignal, threadId?: number, abortNote?: string): Promise<string | null> {
     const id = randomId();
     const opts = q.options ?? [];
     const rec = opts.find((o) => RECOMMENDED.test(o.label));
     const label = (o: { label: string }) => mdEsc(o.label.replace(RECOMMENDED, ""));
-    // совет — с причиной из пояснения к советуемому варианту; пояснения остальных — под «Подробнее»
-    // пояснение после двоеточия и тире — со строчной: «советует «Да, удалить»: освободится около 34 ГБ»
+    // the recommended option's description is the advice's reason, lowercased after the colon
     const low = (x: string) => (tr(/^\p{Lu}\p{Ll}/u, /^[A-Z][a-z]+\b/).test(x) ? x.charAt(0).toLowerCase() + x.slice(1) : x);
     const advice = rec && `${quote(label(rec))}${rec.description ? `: ${mdEsc(low(rec.description))}` : ""}`;
     const about = opts.filter((o) => o.description && o !== rec).map((o) => `${label(o)} — ${mdEsc(low(o.description!))}`);
@@ -292,15 +287,14 @@ export class Approvals {
           : tr(`Спрашивает сессия ${who}`, `Asked by ${who}`);
     const md = [
       `**${mdEsc(scrub(q.question))}**`,
-      [dot(from.replace(/\s+/g, " ").trim()), q.multiSelect ? tr("Можно выбрать несколько, потом «Отправить».", "You can pick several, then tap “Send”.") : ""].filter(Boolean).join("\n"), // без «Свой вариант — ответьте на это сообщение»: свой ответ — свайпом по вопросу, это в руководстве
+      [dot(from.replace(/\s+/g, " ").trim()), q.multiSelect ? tr("Можно выбрать несколько, потом «Отправить».", "You can pick several, then tap “Send”.") : ""].filter(Boolean).join("\n"), // free-text replies (swipe the question) are in the guide
       about.length ? `<details><summary>${tr("Подробнее", "Details")}</summary>\n\n${about.join("\n\n")}\n\n</details>` : "",
     ]
       .filter(Boolean)
       .join("\n\n");
     const [messageId] = await this.tg.send(md, { threadId, buttons: this.questionButtons(id, q, new Set()) });
     return new Promise((resolve) => {
-      // вопрос целиком: в сводке из него берётся последняя фраза с самим вопросом. Обрезанный до 120 знаков, он давал
-      // начало рассказа без самого вопроса
+      // the whole question: the dashboard picks its sentence with "?"
       this.pending.set(id, { kind: "question", resolve, messageId, md, q, picked: new Set(), source, summary: q.question.replace(/\s+/g, " ").trim(), since: Date.now() });
       this.keepOpen(messageId, md);
       const timer = setTimeout(() => this.finishQuestion(id, null), timeoutMs);
@@ -313,7 +307,7 @@ export class Approvals {
     });
   }
 
-  // Совет сессии и выбранные варианты — синие; без значков.
+  // The session's recommendation and the picked options are blue
   private questionButtons(id: string, q: Question, picked: Set<number>): Button[][] {
     const rows: Button[][] = (q.options ?? []).map((o, k) => [
       { text: clip(o.label.replace(RECOMMENDED, ""), 60), data: `q:${id}:${k}`, ...(picked.has(k) || (!q.multiSelect && RECOMMENDED.test(o.label)) ? { style: "primary" as const } : {}) },

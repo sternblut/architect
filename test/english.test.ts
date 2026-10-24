@@ -1,6 +1,6 @@
-// Английский интерфейс (config.json, lang: "en"): ключевые виды на тех же данных, что русские проверки — view, morning,
-// brief, limits, owner-word. Язык включается setLang("en") и возвращается в конце: в одном процессе с этим файлом идут
-// русские проверки. Свои номера сессий, апдейтов и свой список сайтов — чтобы не задеть их общие модули (имена, реестры).
+// The English interface (lang: "en"): the key views on the same data as the Russian tests (view, morning, brief, limits,
+// owner-word). setLang("en") switches the language and the end switches it back, in case Russian tests share the
+// process. Session ids, update ids and sites are its own, so shared module state (names, registries) stays untouched.
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ process.env.ARCH_STATE_DIR ??= mkdtempSync(join(tmpdir(), "arch-english-"));
 process.env.ARCH_LOGS_DIR ??= process.env.ARCH_STATE_DIR;
 const REPO = join(import.meta.dir, "..");
 
-// подставной gh: правок нет, прогонов нет — сеть не нужна
+// Stub gh: no PRs, no runs, no network
 const root = mkdtempSync(join(tmpdir(), "arch-english-repos-"));
 mkdirSync(join(root, "bin"));
 writeFileSync(join(root, "bin", "gh"), "#!/bin/sh\necho '[]'\n", { mode: 0o755 });
@@ -45,7 +45,7 @@ afterAll(() => {
   setSystemTime();
 });
 
-// отдельный процесс на английском — для того, что держит своё состояние в модуле (замеры лимита)
+// A separate English process for modules that keep state (limit samples)
 const isolated = (code: string) =>
   Bun.spawnSync(["bun", "-e", code], { cwd: REPO, env: { ...process.env, ARCH_LANG: "en", ARCH_STATE_DIR: mkdtempSync(join(tmpdir(), "arch-english-own-")) }, stdout: "pipe", stderr: "pipe" }).stdout.toString();
 
@@ -60,8 +60,8 @@ const overview = (flags: string[] = []) => ({
   limits: { week: 62 },
 });
 
-// подменённый Telegram: ответы Bot API выдумываются, запросы копятся. Номера апдейтов — свои, большие: принятые номера
-// Telegram помнит в состоянии, общем с другими проверками, и повтор отбросил бы нажатие
+// A fake Telegram: Bot API answers are made up and the calls recorded. Update ids are large and random: seen ids persist
+// in state shared with other tests, and a repeat would drop the tap.
 function fakeTelegram() {
   writeFileSync(join(STATE, "owner.json"), JSON.stringify({ id: 333333 }));
   const tg = new Telegram("123456:ENGLISH_TEST_TOKEN_ENGLISH_TEST_TOKEN_ENG");
@@ -76,8 +76,8 @@ function fakeTelegram() {
   const press = (data: string) =>
     tg.bot.handleUpdate({ update_id: ++u, callback_query: { id: String(u), from: { id: 333333, is_bot: false, first_name: "A" }, chat_instance: "1", data, message: { message_id: 5, date: 0, chat: { id: 333333, type: "private" } } } } as any);
   const texts = (kb: any) => (kb?.inline_keyboard ?? []).map((r: any[]) => r.map((b) => b.text));
-  // ждать, пока сообщение уйдёт: бриф собирается командами git, на медленной машине — дольше. После отправки запрос
-  // ещё регистрируется как ждущий — короткая пауза, иначе нажатие придёт раньше и будет «устарело»
+  // Wait until the message is sent (the brief runs git commands, slower on a slow machine). After sending, the request
+  // still has to register as pending: pause briefly, or the tap arrives first and finds it expired.
   const sent = async (k = 1) => {
     for (let i = 0; i < 250 && calls.filter((c) => c.method === "sendRichMessage").length < k; i++) await Bun.sleep(20);
     await Bun.sleep(50);
@@ -88,7 +88,7 @@ function fakeTelegram() {
 
 describe("time", () => {
   test("today, tomorrow, a date — at 24-hour time; until; due", () => {
-    setSystemTime(new Date("2026-10-22T11:07:00Z")); // 14:07 по Москве
+    setSystemTime(new Date("2026-10-22T11:07:00Z")); // 14:07 in Moscow
     const now = Date.now();
     const h = 3600_000;
     expect(plain(status.untilTime(now + 3 * h))).toBe("until 17:07");
@@ -99,7 +99,7 @@ describe("time", () => {
     expect(plain(status.whenHuman(now + 5 * 24 * h))).toBe("Oct 27 at 14:07");
     expect(plain(status.deadline("make the catalog show real numbers by October 23"))).toBe("due tomorrow");
     expect(plain(status.deadline("ship it by Oct 31"))).toBe("due Oct 31");
-    expect(plain(status.deadline("к показу 31 октября"))).toBe("due Oct 31"); // русская цель понятна и английскому боту
+    expect(plain(status.deadline("к показу 31 октября"))).toBe("due Oct 31"); // a Russian goal works in English too
     expect(status.deadline("no dates here, Octopus 5")).toBe("");
     expect(plain(status.apiStop("You've hit your weekly limit · resets Oct 30 at 11pm (Europe/Moscow)", now))).toBe("paused until Oct 30 at 23:00: the weekly limit ran out");
     expect(status.apiStop("API Error: 500", now)).toBe("stopped on an error, you can resume it");
@@ -237,7 +237,7 @@ describe("deploy and delete requests", () => {
     const card = (await sent())[0];
     expect(card.payload.rich_message.markdown).toStartWith("Delete file “notes.txt” in project “Beacon”?");
     expect(texts(card.payload.reply_markup)).toEqual([["Delete", "Decline"]]);
-    expect(approvals.list()[0].final).toBe(true); // «Can’t be undone» — не из закрепа
+    expect(approvals.list()[0].final).toBe(true); // "Can’t be undone": not from the dashboard
     const c = board.compose({ ...overview(), rows: [] }, true);
     expect(c.md.replace(/\*\*/g, "")).toContain("Beacon header — delete file “notes.txt” in project “Beacon”?");
     expect(c.buttons.flat().some((b) => /^Delete/.test(b.text))).toBe(false);
@@ -293,7 +293,7 @@ describe("limit and failure notices", () => {
     expect(msg).toMatch(/^\*\*Weekly Claude limit will run out (today|tomorrow|Mar \d+) at \d\d:\d\d\.\*\*\n/);
     expect(msg).toContain("89% used, and it only resets Mar 14 at 05:00: until then all work stops, including my replies.");
     expect(msg).toEndWith("To keep work going, buy more usage.\nhttps://claude.ai/settings/usage");
-    const later = new Date(Date.now() + 3 * 86_400_000); // не сегодня: иначе в сообщении нет дня
+    const later = new Date(Date.now() + 3 * 86_400_000); // not today, or the message has no day
     const resets = `${later.toLocaleString("en-US", { month: "short" })} ${later.getDate()}`;
     expect(plain(limitRu(`You've hit your weekly limit · resets ${resets} at 11pm (Europe/Moscow)`))).toMatch(/^\*\*Weekly Claude limit reached\.\*\*\nWork is paused until .+ at 23:00\. Until then I can only show the summary\.$/);
   });
@@ -305,7 +305,7 @@ describe("limit and failure notices", () => {
   });
 
   test("connection gaps: the Mac slept or had no internet", async () => {
-    setClaudeBin(join(root, "no-claude")); // список сессий пуст, claude не зовём
+    setClaudeBin(join(root, "no-claude")); // no sessions
     const from = Date.parse("2026-10-22T09:07:00Z");
     const to = Date.parse("2026-10-22T11:06:00Z");
     expect(plain(await outageReport(from, to, "sleep"))).toBe("The Mac was asleep from 12:07 to 14:06, so work was paused.\nWhat you wrote during that time only just arrived — replying now.");
@@ -320,7 +320,7 @@ describe("buttons and links", () => {
     const approvals = new Approvals(tg);
     void approvals.confirm({ source: "Архитектор", action: "Stop “Blog”", reason: "work will stop; the conversation is kept, so it can resume later", timeoutMs: 4000 });
     void approvals.confirm({ source: "Mac", action: "ffprobe -v error x.mp4", timeoutMs: 4000 });
-    const cards = await sent(2); // вторая уходит через секунду: темп чата — одно сообщение в секунду
+    const cards = await sent(2); // one message per second, so the second comes a second later
     expect(cards[0].payload.rich_message.markdown).toStartWith("Stop “Blog”?");
     expect(texts(cards[0].payload.reply_markup)).toEqual([["Stop", "Decline"]]);
     expect(cards[1].payload.rich_message.markdown).toContain("Requested by Mac");
@@ -364,9 +364,9 @@ describe("typography and the language switch", () => {
   test("English rules: curly quotes and apostrophes, dashes, ranges, numbers kept with their word", () => {
     const t = typograph(`Beacon - the "new" header 3-5 is ready, it's 12 GB`);
     expect(plain(t)).toBe("Beacon — the “new” header 3–5 is ready, it’s 12 GB");
-    expect(t).toContain(`Beacon${NB}—`); // тире не начинает строку
-    expect(t).toEndWith(`12${NB}GB`); // число не отрывается от единицы
-    expect(typograph("до сброса в четверг")).toBe("до сброса в четверг"); // русские предлоги — не английское правило
+    expect(t).toContain(`Beacon${NB}—`); // a dash never starts a line
+    expect(t).toEndWith(`12${NB}GB`); // a number stays with its unit
+    expect(typograph("до сброса в четверг")).toBe("до сброса в четверг"); // Russian prepositions are not an English rule
   });
 
   test("Russian comes back unchanged", () => {

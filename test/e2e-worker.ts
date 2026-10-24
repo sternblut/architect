@@ -1,20 +1,20 @@
-// Живая проверка рабочих хуков на настоящей фоновой сессии Claude Code.
-// Запуск: ARCH_STATE_DIR=<пустая папка> ARCH_HOOK_PORT=47391 bun test/e2e-worker.ts
-// Telegram не нужен: решения владельца отвечает заглушка, всё остальное — настоящие модули хоста.
+// Live check of the worker hooks on a real background Claude Code session.
+// Run: ARCH_STATE_DIR=<empty folder> ARCH_HOOK_PORT=47391 bun test/e2e-worker.ts
+// No Telegram: a stub makes the owner's decisions; everything else is the real host code.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ARCH_HOME, STATE, TEST_HOME, ensureDirs } from "../src/config";
+import { STATE, TEST_HOME, ensureDirs } from "../src/config";
 import { startHookServer } from "../src/hookserver";
 import { deliver, listAgents, outbox, readTail, setClaudeBin, startWorker, stopSession, transcriptPath, writeWorkerSettings } from "../src/sessions";
 import { run } from "../src/util";
 
-if (!process.env.ARCH_STATE_DIR) throw new Error("задайте ARCH_STATE_DIR — тест не трогает настоящее состояние");
+if (!process.env.ARCH_STATE_DIR) throw new Error("set ARCH_STATE_DIR: the test must not touch real state");
 ensureDirs();
 const secret = "e2e-" + crypto.randomUUID();
 writeFileSync(join(STATE, "hook-secret"), secret, { mode: 0o600 });
 const claude = Bun.which("claude")!;
 setClaudeBin(claude);
-writeWorkerSettings(secret, process.execPath);
+writeWorkerSettings(process.execPath);
 
 const events: string[] = [];
 const approvals = {
@@ -31,11 +31,9 @@ const turns: string[] = [];
 const server = startHookServer(secret, approvals as never, {
   label: (s) => `test ${s.slice(0, 6)}`,
   threadFor: async () => undefined,
-  turnEnded: async (_s, _c, t) => void turns.push(t),
   sessionQuestion: async () => {},
   workerTurn: async (_s, _c, t) => void turns.push(t),
   alert: async (_s, _c, t) => void events.push(`alert:${t}`),
-  post: async () => [],
   markHooked: () => {},
   permissionDecided: () => {},
 });
@@ -51,7 +49,7 @@ const task = [
 ].join("\n");
 
 const w = await startWorker({ folder: TEST_HOME, task, name: "arch-e2e", model: "sonnet", effort: "high", remote: false });
-console.log("запущена", w.id, w.sessionId);
+console.log("started", w.id, w.sessionId);
 outbox.push(w.sessionId, "ЛИМОН");
 
 const deadline = Date.now() + 240_000;
@@ -61,10 +59,10 @@ while (Date.now() < deadline) {
   row = (await listAgents(true)).find((r) => r.id === w.id);
   if (turns.length && (row?.state === "done" || row?.state === "blocked") && row?.status !== "busy") break;
 }
-// Второй ход: владелец отвечает простаивающей сессии — хост будит её. Шлагбаум обязан остаться после пробуждения.
+// Second turn: the owner answers the idle session and the host wakes it. The gate must survive the wake-up.
 const turnsBefore = turns.length;
-const res = row ? await deliver(row, "Второй ход. Выполни Bash: rm -f ./arch-e2e-second.txt — и ответь одной строкой: ВТОРОЙ-ХОД-ОК") : { ok: false, how: "failed", note: "нет строки" };
-console.log("доставка второго хода:", res);
+const res = row ? await deliver(row, "Второй ход. Выполни Bash: rm -f ./arch-e2e-second.txt — и ответь одной строкой: ВТОРОЙ-ХОД-ОК") : { ok: false, how: "failed", note: "no row" };
+console.log("second turn delivery:", res);
 const deadline2 = Date.now() + 180_000;
 while (Date.now() < deadline2) {
   await Bun.sleep(4000);
@@ -74,21 +72,21 @@ while (Date.now() < deadline2) {
 const tr = readTail(transcriptPath(w.cwd, w.sessionId));
 const flat = JSON.stringify(tr);
 const checks: [string, boolean][] = [
-  ["безобидная команда прошла без вопроса", !events.some((e) => e.includes("echo arch-e2e-ok"))],
-  ["удаление спросило владельца", events.some((e) => e.startsWith("confirm:") && e.includes("rm -f"))],
-  ["хостинг запрещён шлагбаумом", flat.includes("Шлагбаум архитектора")],
-  ["вопрос с вариантами дошёл до владельца", events.some((e) => e.startsWith("ask:") && e.includes("Какой вариант"))],
-  ["ответ «B» вернулся в сессию", turns.join("\n").includes("B")],
-  ["сообщение владельца «ЛИМОН» доставлено", turns.join("\n").includes("ЛИМОН") || flat.includes("ЛИМОН")],
-  ["итог хода пришёл хуком Stop", turns.length > 0],
-  ["ответ владельца разбудил простаивающую сессию", res.ok && res.how === "resumed"],
-  ["после пробуждения шлагбаум на месте: удаление снова спросило", events.some((e) => e.startsWith("confirm:") && e.includes("arch-e2e-second"))],
-  ["второй ход дошёл до владельца", turns.slice(turnsBefore).join("\n").includes("ВТОРОЙ-ХОД-ОК")],
+  ["a harmless command ran without a question", !events.some((e) => e.includes("echo arch-e2e-ok"))],
+  ["a deletion asked the owner", events.some((e) => e.startsWith("confirm:") && e.includes("rm -f"))],
+  ["the gate refused direct hosting access", flat.includes("Шлагбаум архитектора")],
+  ["a multiple-choice question reached the owner", events.some((e) => e.startsWith("ask:") && e.includes("Какой вариант"))],
+  ["the answer B came back to the session", turns.join("\n").includes("B")],
+  ["the owner's message ЛИМОН was delivered", turns.join("\n").includes("ЛИМОН") || flat.includes("ЛИМОН")],
+  ["the turn result came through the Stop hook", turns.length > 0],
+  ["the owner's answer woke the idle session", res.ok && res.how === "resumed"],
+  ["after the wake-up the gate is still there: a deletion asked again", events.some((e) => e.startsWith("confirm:") && e.includes("arch-e2e-second"))],
+  ["the second turn reached the owner", turns.slice(turnsBefore).join("\n").includes("ВТОРОЙ-ХОД-ОК")],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "✓" : "✗"} ${name}`);
-console.log("события:", events);
-console.log("итоги ходов:", turns.map((t) => t.slice(0, 200)));
-// уборка: все сессии этого теста (после пробуждения у разговора мог смениться короткий id)
+console.log("events:", events);
+console.log("turn results:", turns.map((t) => t.slice(0, 200)));
+// Cleanup: every session of this test (the short id may change on wake-up)
 for (const r of (await listAgents(true)).filter((x) => x.name === "arch-e2e" && x.id)) {
   await stopSession(r.id!);
   await run([claude, "rm", r.id!]);

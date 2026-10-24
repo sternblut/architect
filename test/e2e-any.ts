@@ -1,5 +1,5 @@
-// Живая проверка общего хука на настоящей интерактивной сессии Claude Code в tmux — как сессия, которую владелец запустил сам.
-// Запуск: bun test/e2e-any.ts   (нужен tmux; Telegram заглушён, «владелец отошёл» — принудительно)
+// Live check of the shared hook on a real interactive Claude Code session in tmux, like one the owner started.
+// Run: bun test/e2e-any.ts   (needs tmux; Telegram is stubbed and the owner is forced "away")
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ const { run } = await import("../src/util");
 const secret = "any-" + crypto.randomUUID();
 writeFileSync(join(dir, "hook-secret"), secret, { mode: 0o600 });
 writeFileSync(join(dir, "host.pid"), String(process.pid));
-writeFileSync(join(dir, "owner.json"), JSON.stringify({ id: 1 })); // хук молчит, пока Telegram не привязан к владельцу
+writeFileSync(join(dir, "owner.json"), JSON.stringify({ id: 1 })); // the hook stays silent until an owner is paired
 
 const events: string[] = [];
 let confirms = 0;
@@ -29,8 +29,8 @@ const approvals = {
     new Promise<"yes" | "no" | "timeout">((resolve) => {
       confirms++;
       events.push(`confirm:${o.action}`);
-      if (confirms === 1) return setTimeout(() => resolve("yes"), 500); // «Разрешить» с телефона
-      o.signal?.addEventListener("abort", () => (events.push(`released:${o.signal?.reason}`), resolve("timeout"))); // второй — ждём, пока «владелец вернётся»
+      if (confirms === 1) return setTimeout(() => resolve("yes"), 500); // "Allow" from the phone
+      o.signal?.addEventListener("abort", () => (events.push(`released:${o.signal?.reason}`), resolve("timeout"))); // the second waits for the owner's return
     }),
   ask: async (o: { questions: { question: string; options?: { label: string }[] }[] }) => {
     events.push(`ask:${o.questions.map((q) => q.question).join("|")}`);
@@ -41,16 +41,14 @@ const posts: string[] = [];
 const server = startHookServer(secret, approvals as never, {
   label: (s) => `test ${s.slice(0, 6)}`,
   threadFor: async () => undefined,
-  turnEnded: async (_s, _c, t) => void posts.push(`turn:${t}`),
   sessionQuestion: async (_s, _c, t) => void posts.push(`question:${t}`),
   workerTurn: async (_s, _c, t) => void posts.push(`worker:${t}`),
   alert: async (_s, _c, t) => void posts.push(`alert:${t}`),
-  post: async (_s, _c, md) => (posts.push(`post:${md}`), [1]),
   markHooked: () => {},
   permissionDecided: () => {},
 });
 
-// «Шлагбаум» опыта: команды с any-ask требуют разрешения — так в терминале появляется запрос, который надо решить
+// A test gate: commands containing any-ask need permission, so the terminal shows a request to decide
 const gate = Bun.serve({
   hostname: "127.0.0.1",
   port: PORT + 1,
@@ -83,7 +81,7 @@ const task =
   "3) закончи ход одним вопросом мне: «Какое слово написать?» — и остановись.";
 const cwd = join(ARCH_HOME, "test");
 await run(["tmux", "kill-session", "-t", "arch-any"]);
-// окружение — явно в команде: если tmux уже запущен с чужим окружением, общий хук из ~/.claude/settings.json пошёл бы в настоящий хост
+// The environment goes in the command: a tmux server started with another environment would send the shared hook to the real host
 await run(["tmux", "new-session", "-d", "-s", "arch-any", "-x", "160", "-y", "45", "-c", cwd, `ARCH_STATE_DIR='${dir}' ARCH_HOOK_PORT=${PORT} claude --settings '${settings}' --model sonnet -n arch-any-e2e "${task}"`]);
 const pane = async () => (await run(["tmux", "capture-pane", "-t", "arch-any", "-p"])).stdout;
 const until = async (cond: () => boolean | Promise<boolean>, ms: number) => {
@@ -95,13 +93,13 @@ const until = async (cond: () => boolean | Promise<boolean>, ms: number) => {
   return false;
 };
 
-// шаг 3: сессия спрашивает — держим ход, отвечаем «с телефона»
+// Step 3: the session asks; hold the turn and answer "from the phone"
 const held = await until(() => stopHolds.all().length > 0, 150_000);
 if (held) {
   await Bun.sleep(1500);
   stopHolds.answer(stopHolds.all()[0], "Напиши одно слово: СЛИВА, затем выполни Bash: echo any-ask-2");
 }
-// второй запрос разрешения ждёт «телефона», владелец «возвращается к Mac» — запрос должен уйти в терминал
+// The second permission request waits for the phone; the owner "returns to the Mac", so it must go back to the terminal
 await until(() => confirms >= 2, 90_000);
 await Bun.sleep(2000);
 fireReturn();
@@ -112,16 +110,16 @@ await Bun.sleep(3000);
 const screen = await pane();
 
 const checks: [string, boolean][] = [
-  ["разрешение терминальной сессии пришло «на телефон» и разрешено оттуда", events.some((e) => e === "confirm:echo any-ask-1") && /Allowed by PermissionRequest hook/.test(screen + (await run(["tmux", "capture-pane", "-t", "arch-any", "-p", "-S", "-200"])).stdout)],
-  ["вопрос с вариантами отвечен «с телефона»", events.some((e) => e.startsWith("ask:Какой цвет"))],
-  ["вопрос в конце хода ушёл архитектору на суждение и ход удержан", held && posts.some((p) => p.startsWith("question:") && p.includes("Какое слово"))],
-  ["отчёты сессии владельцу не пересылаются", !posts.some((p) => p.startsWith("turn:"))],
-  ["ответ «с телефона» дошёл как реплика — сессия написала СЛИВА", /СЛИВА/.test(screen)],
-  ["вернулся к Mac — запрос ушёл в терминал", events.some((e) => e.startsWith("released:Решите на Mac")) && dialog],
+  ["a Terminal session's permission request reached the phone and was allowed there", events.some((e) => e === "confirm:echo any-ask-1") && /Allowed by PermissionRequest hook/.test(screen + (await run(["tmux", "capture-pane", "-t", "arch-any", "-p", "-S", "-200"])).stdout)],
+  ["a multiple-choice question was answered from the phone", events.some((e) => e.startsWith("ask:Какой цвет"))],
+  ["the end-of-turn question went to the architect and the turn was held", held && posts.some((p) => p.startsWith("question:") && p.includes("Какое слово"))],
+  ["session reports are not forwarded to the owner", !posts.some((p) => p.startsWith("turn:"))],
+  ["the answer from the phone arrived as a message: the session wrote СЛИВА", /СЛИВА/.test(screen)],
+  ["back at the Mac, the request went to the terminal", events.some((e) => e.startsWith("released:Решите на Mac")) && dialog],
 ];
 for (const [name, ok] of checks) console.log(`${ok ? "✓" : "✗"} ${name}`);
-console.log("события:", events);
-console.log("сообщения владельцу:", posts.map((p) => p.slice(0, 120)));
+console.log("events:", events);
+console.log("messages to the owner:", posts.map((p) => p.slice(0, 120)));
 await run(["tmux", "kill-session", "-t", "arch-any"]);
 server.stop(true);
 gate.stop(true);

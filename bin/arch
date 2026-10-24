@@ -1,23 +1,23 @@
 #!/bin/bash
-# Архитектор — управление хостом. Глобально доступна как `archi` (ссылка в ~/.local/bin).
-#   archi on | off [--all] | status | logs [-f] | restart | update | rollback | pair | token | version | run | uninstall
+# Controls the Architect host; usually linked as ~/.local/bin/archi.
+#   archi on | off [--all] | status | logs [-f] | restart | update | rollback | pair | token | connect | ask | version | run | uninstall
 set -uo pipefail
 SELF="$0"; while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
 ARCH="$(cd "$(dirname "$SELF")/.." && pwd)"
 BUN="$(command -v bun || { [ -x "$HOME/.bun/bin/bun" ] && echo "$HOME/.bun/bin/bun"; } || echo /opt/homebrew/bin/bun)"
-# Плагин Claude Code: код — в папке версии (меняется с каждым обновлением), состояние и журналы — в папке данных плагина,
-# как в src/config.ts (pluginData). Из git — всё рядом с кодом.
+# Plugin install: code in the per-version folder, state and logs in the plugin data folder (pluginData in src/config.ts).
+# A git clone keeps everything next to the code.
 DATA="${ARCH_DATA:-}"
 case "$ARCH" in "$HOME/.claude/plugins/cache/"*/*/*)
   r="${ARCH#"$HOME/.claude/plugins/cache/"}"
   DATA="${DATA:-$HOME/.claude/plugins/data/$(printf '%s@%s' "$(cut -d/ -f2 <<<"$r")" "$(cut -d/ -f1 <<<"$r")" | sed 's/[^A-Za-z0-9_-]/-/g')}" ;;
 esac
 HERE="${DATA:-$ARCH}"
-STATEDIR="${ARCH_STATE_DIR:-$HERE/state}" # как STATE в src/config.ts
-# имена службы, записей связки ключей и бота, язык владельца — из config.json и state этой установки
+STATEDIR="${ARCH_STATE_DIR:-$HERE/state}" # as STATE in src/config.ts
+# service label, Keychain names, bot username and language of this install
 eval "$(cd "$ARCH" && "$BUN" -e 'import {config, STATE} from "./src/config"; import {readJson} from "./src/util"; const q = (s) => "\x27" + String(s ?? "").replace(/[^\w.@-]/g, "") + "\x27"; console.log(`LABEL=${q(config.label)} KC=${q(config.keychainService)} KA=${q(config.keychainAccount)} BOTNAME=${q(readJson(STATE + "/bot.json", {}).username)} L=${q(config.lang)}`)' 2>/dev/null)"
 LABEL="${LABEL:-app.archi.host}"; KC="${KC:-archi-telegram}"; KA="${KA:-archi}"; BOTNAME="${BOTNAME:-}"; L="${L:-ru}"
-# сообщение — на языке установки: t "по-русски" "in English"
+# t "Russian" "English": the text in the install's language
 t() { if [ "$L" = en ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
@@ -26,7 +26,7 @@ xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
 
 write_plist() {
   mkdir -p "$HOME/Library/LaunchAgents" "$HERE/logs"
-  # стартер плагина — в папке данных: он при каждом запуске находит текущую версию кода (src/launch.ts)
+  # plugin install: the starter in the data folder finds the current version on every start (src/launch.ts)
   local prog="$ARCH/src/main.ts"
   [ -n "$DATA" ] && cp "$ARCH/src/launch.ts" "$DATA/launch.ts" && prog="$DATA/launch.ts"
   cat >"$PLIST" <<PL
@@ -58,23 +58,22 @@ workers() { cd "$ARCH" && "$BUN" -e 'import {readJson} from "./src/util"; import
 case "${1:-help}" in
   on|start)
     write_plist
-    # проверки во временной папке: launchd не трогаем
-    hooks() { [ -n "$DATA" ] || (cd "$ARCH" && "$BUN" src/install-hooks.ts "$1"); } # у плагина хуки свои — hooks/hooks.json
+    hooks() { [ -n "$DATA" ] || (cd "$ARCH" && "$BUN" src/install-hooks.ts "$1"); } # the plugin has hooks/hooks.json
+    # ARCHI_NO_LAUNCHCTL (tests): write the service, leave launchd alone
     [ -n "${ARCHI_NO_LAUNCHCTL:-}" ] && { hooks install; echo "$(t "Проверка: служба записана ($PLIST), launchd не тронут." "Test run: service written ($PLIST), launchd untouched.")"; exit 0; }
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null
     launchctl bootstrap "$DOMAIN" "$PLIST" && sleep 3
     hooks install
     p="$(pid)"; [ -n "$p" ] && echo "$(t "Архитектор включён (pid $p)${BOTNAME:+, бот @$BOTNAME}. Журнал: archi logs" "Architect is on (pid $p)${BOTNAME:+, bot @$BOTNAME}. Log: archi logs")" || { echo "$(t "Не запустился — archi logs" "Didn’t start — archi logs")"; exit 1; } ;;
   restart)
-    # не рвать ход архитектора: ждём, пока он ответит владельцу (до 2 минут)
+    # let the architect finish its turn first, up to 2 minutes
     for i in $(seq 1 60); do [ -f "$STATEDIR/busy" ] || break; [ "$i" = 1 ] && echo "$(t "Архитектор отвечает — жду конца хода…" "Architect is replying — waiting for the turn to end…")"; sleep 2; done
     launchctl kickstart -k "$DOMAIN/$LABEL" && sleep 2 && echo "$(t "Перезапущен" "Restarted") (pid $(pid))" ;;
   update)
-    # у плагина версии ведёт Claude Code: обновить плагин и перезапустить хост — стартер возьмёт новую папку версии
+    # plugin: Claude Code manages versions; after the update the restarted starter picks up the new version folder
     [ -n "$DATA" ] && { claude plugin update "${ARCH_PLUGIN:-architect@sapfir}" && exec "$SELF" restart; exit 1; }
-    # выпуск одной командой: свежая версия с GitHub и один перезапуск. Ждём, пока хост поднимется по-настоящему:
-    # под большой нагрузкой Mac запуск идёт до ~10 минут, а «Перезапущен» значит только, что процесс запущен
-    # после отката (archi rollback) — снова на ветку выпусков; прежняя версия запоминается для следующего отката
+    # git: pull, restart and wait for the host's startup line, which can take up to ~10 minutes on a loaded Mac.
+    # After archi rollback, return to the release branch first; releases.log keeps the previous version for the next rollback.
     prev="$(git -C "$ARCH" rev-parse --short HEAD 2>/dev/null)"
     branch="$(tail -n 1 "$STATEDIR/releases.log" 2>/dev/null | awk '{print $3}')"
     [ "$(git -C "$ARCH" rev-parse --abbrev-ref HEAD 2>/dev/null)" = HEAD ] && [ -n "$branch" ] && git -C "$ARCH" checkout -q "$branch"
@@ -90,7 +89,7 @@ case "${1:-help}" in
     echo "$(t "Хост не поднялся за 15 минут — archi logs" "The host didn’t come up within 15 minutes — archi logs")"; exit 1 ;;
   rollback)
     [ -n "$DATA" ] && { echo "$(t "У плагина откат — через Claude Code: /plugin → architect" "For the plugin, roll back in Claude Code: /plugin → architect")"; exit 1; }
-    # откат одной командой: на версию до последнего выпуска (archi update). Вернуть свежую — archi update
+    # back to the version before the last archi update
     prev="$(tail -n 1 "$STATEDIR/releases.log" 2>/dev/null | awk '{print $1}')"
     [ -z "$prev" ] && { echo "$(t "Откатывать не на что: выпусков через archi update ещё не было" "Nothing to roll back to: there has been no release with archi update yet")"; exit 1; }
     git -C "$ARCH" checkout -q "$prev" || { echo "$(t "Не откатился: в ${ARCH/#$HOME/~} свои правки" "Not rolled back: ${ARCH/#$HOME/~} has local changes")"; exit 1; }
@@ -98,7 +97,7 @@ case "${1:-help}" in
     git -C "$ARCH" log -1 --format="$(t 'Бот работает на прежней версии %h от %ad: %s. Вернуть свежую: archi update' 'The bot is back on version %h from %ad: %s. Back to the latest: archi update')" --date=format:"$(t '%d.%m %H:%M' '%b %d, %H:%M')" ;;
   off|stop)
     [ -z "${ARCHI_NO_LAUNCHCTL:-}" ] && launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null; rm -f "$PLIST"
-    [ -n "$DATA" ] || (cd "$ARCH" && "$BUN" src/install-hooks.ts uninstall) # хуки плагина снимает /plugin disable
+    [ -n "$DATA" ] || (cd "$ARCH" && "$BUN" src/install-hooks.ts uninstall) # plugin hooks go with /plugin disable
     echo "$(t "Архитектор выключен: бот молчит, архитектор и наблюдатель остановлены, общий хук снят, автозапуска нет." "Architect is off: the bot is silent, the architect and the watcher are stopped, the shared hook is removed, no autostart.")"
     if [ "${2:-}" = "--all" ]; then
       ids="$(workers)"
@@ -120,19 +119,19 @@ case "${1:-help}" in
     [ -n "$BOTNAME" ] && echo "$(t "Откройте на iPhone или Mac" "Open on your iPhone or Mac"): https://t.me/$BOTNAME?start=$code"
     echo "$(t "Или напишите боту${BOTNAME:+ @$BOTNAME} код $code (действует 30 минут, 5 попыток)." "Or send the bot${BOTNAME:+ @$BOTNAME} the code $code (valid for 30 minutes, 5 tries).")" ;;
   connect)
-    # подключение одной кнопкой (managed bots): бот-менеджер, его открытый ключ и адрес ящика — в connect.json
-    # раздачи. Без терминала (/architect:connect) «да» приходит отдельной командой: archi connect --yes | --no
+    # One-button connection (managed bots): the manager bot, its public key and the box URL come from connect.json.
+    # Without a terminal (/architect:connect) the confirmation comes as a separate call: archi connect --yes | --no
     case "${2:-}" in --yes | --no) mkdir -p "$STATEDIR" && echo "${2#--}" >"$STATEDIR/connect.answer"; exit 0 ;; esac
     [ -f "$ARCH/connect.json" ] || { echo "$(t "Подключение одной кнопкой здесь не настроено — нужен свой бот: archi token, затем archi on и archi pair" "One-button connection isn’t set up here — use your own bot: archi token, then archi on and archi pair")"; exit 3; }
     eval "$(cd "$ARCH" && "$BUN" -e 'const c = await Bun.file("connect.json").json(); const q = (s) => "\x27" + String(s ?? "").replace(/[^\w.:\/@-]/g, "") + "\x27"; console.log(`MGR=${q(c.manager)} MKEY=${q(c.key)} RELAY=${q(c.relay)}`)')"
     (cd "$ARCH" && "$BUN" src/connect.ts "$MGR" "$MKEY" "$RELAY") && exec "$SELF" on ;;
   token)
-    # без терминала (команда /architect:connect в сессии Claude Code) — окном macOS, токен сразу в связку ключей
+    # no terminal (/architect:connect): a macOS dialog puts the token straight into the Keychain
     if [ "${2:-}" = "--dialog" ] || ! [ -t 0 ]; then (cd "$ARCH" && "$BUN" src/secret.ts token); exit $?; fi
     echo "$(t "Вставьте токен бота от @BotFather (ввод не виден), Enter, и ещё раз:" "Paste the bot token from @BotFather (input is hidden), press Enter, then paste it again:")"
     security add-generic-password -a "$KA" -s "$KC" -U -w && echo "$(t "Токен в связке ключей. Перезапуск: archi restart" "Token saved in the keychain. Restart: archi restart")" ;;
   ask)
-    # archi ask "что сделать" ["зачем"] — кнопка владельцу в Telegram; код выхода 0 только после «Разрешить»
+    # archi ask "what to do" ["why"]: a button in Telegram; exit code 0 only if the owner allows
     [ -z "${2:-}" ] && { echo "$(t 'archi ask "что сделать" ["зачем"]' 'archi ask "what to do" ["why"]')"; exit 2; }
     secret="$(security find-generic-password -a "$KA" -s "$KC-hook" -w 2>/dev/null)"; port="$(cd "$ARCH" && "$BUN" -e 'import {config} from "./src/config"; console.log(config.hookPort)')"
     body="$(SRC="${ARCH_ASK_SOURCE:-Mac}" ACT="$2" WHY="${3:-}" "$BUN" -e 'console.log(JSON.stringify({source: process.env.SRC, action: process.env.ACT, reason: process.env.WHY || undefined}))')"
@@ -140,14 +139,14 @@ case "${1:-help}" in
     d="$(curl -s --max-time 1900 -H "content-type: application/json" -H "x-arch-secret: $secret" -d "$body" "http://127.0.0.1:$port/hook/ask" | "$BUN" -e 'const t=await Bun.stdin.text(); try{console.log(JSON.parse(t).decision)}catch{console.log("error")}')"
     echo "$(t "Ответ" "Answer"): $d"; [ "$d" = "yes" ] ;;
   adopt-prepare)
-    # для «archi adopt» из обёртки: найти сессию, завершить её процесс в старой вкладке, отдать «папка<TAB>номер»
+    # for "archi adopt" in claude-wrap.zsh: find the session, end its process in the old tab, print "<folder><TAB><session id>"
     shift; cd "$ARCH" && exec "$BUN" src/adopt.ts "$@" ;;
   version)
     git -C "$ARCH" log -5 --format='%h %ad %s' --date=format:"$(t '%d.%m %H:%M' '%b %d, %H:%M')" ;;
   run)
     cd "$ARCH" && exec "$BUN" src/main.ts ;;
   uninstall)
-    # снять всё одной командой: служба, общий хук, сессии архитектора (их хуки ведут в эту папку), секреты, команда archi, код
+    # service, shared hook, the architect's sessions (their hooks point into this folder), secrets, the archi command, the code
     "$SELF" off --all
     (cd "$ARCH" && "$BUN" src/secret.ts forget)
     [ "$(readlink "$HOME/.local/bin/archi" 2>/dev/null)" = "$ARCH/bin/arch" ] && rm -f "$HOME/.local/bin/archi"

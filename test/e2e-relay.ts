@@ -1,9 +1,9 @@
-// Живая проверка дежурного локально: Worker в wrangler dev (workerd, Durable Object на SQLite), подставной Telegram,
-// подставной хост на настоящих src/relay.ts и src/telegram.ts, подставной помощник сна. Настоящий бот и его токен не нужны.
-// Прогон: Mac уснул → владелец написал три сообщения → получил ответы → Mac проснулся → забрал очередь → ответил по существу.
-// Потом — стенд «Telegram для iOS» (тёмная тема, 393 pt) и снимки того, что увидел бы владелец.
-// bun test/e2e-relay.ts <папка для снимков>
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+// Live check of the cloud relay, locally: the Worker under wrangler dev (workerd, SQLite Durable Object), a mock Telegram,
+// a mock host on the real src/relay.ts and src/telegram.ts, and a mock sleep helper. No real bot or token needed.
+// Flow: the Mac sleeps → the owner writes three messages → gets replies → the Mac wakes → takes the queue → answers.
+// Then a "Telegram for iOS" mockup (dark theme, 393 pt) renders screenshots of what the owner would see.
+// bun test/e2e-relay.ts <screenshot folder>
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,10 +26,10 @@ const checks: [string, boolean, string?][] = [];
 const check = (name: string, ok: boolean, note?: string) => (checks.push([name, ok, note]), ok);
 const until = async (what: string, fn: () => boolean | Promise<boolean>, ms = 15_000) => {
   for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(25)) if (await fn()) return true;
-  throw new Error(`не дождался: ${what}`);
+  throw new Error(`timed out waiting for: ${what}`);
 };
 
-// ── облако: Worker локально ──────────────────────────────────────────────────
+// ── cloud: the Worker, locally ───────────────────────────────────────────────
 const keys = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
 const MAC_KEY = Buffer.from(await crypto.subtle.exportKey("raw", keys.publicKey)).toString("base64url");
 const PORT = 8791;
@@ -42,7 +42,7 @@ const wrangler = Bun.spawn(
 const wranglerLog = Promise.all([new Response(wrangler.stdout).text(), new Response(wrangler.stderr).text()]).then((x) => x.join("\n"));
 await until("wrangler dev", async () => (await fetch(BASE + "/").catch(() => null))?.status === 404, 90_000);
 
-// ── подставной Telegram: Bot API для хоста и доставка webhook дежурному ──────
+// ── mock Telegram: Bot API for the host, webhook delivery to the relay ───────
 type Line = { from: "owner" | "bot"; text: string; at: number; id: number; replyTo?: number; via?: "дежурный" | "Mac"; phase: "awake" | "asleep" | "woke" };
 const chat: Line[] = [];
 let phase: Line["phase"] = "awake";
@@ -80,7 +80,7 @@ const ownerMsg = (text: string, show = true) => {
   if (show) chat.push({ from: "owner", text, at: Date.now(), id, phase });
   return { update_id: ++uid, message: { message_id: id, date: Math.floor(Date.now() / 1000), chat: { id: OWNER, type: "private" }, from: { id: OWNER, is_bot: false, first_name: "Владелец" }, text } };
 };
-// Telegram доставляет апдейт на webhook и выполняет метод из тела ответа
+// Telegram posts the update to the webhook and executes the method in the response body
 async function deliver(u: any, url = webhook, show = true) {
   const t = performance.now();
   const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(u) });
@@ -90,14 +90,14 @@ async function deliver(u: any, url = webhook, show = true) {
   return { status: res.status, call, ms: Math.round(performance.now() - t) };
 }
 const signedPull = async (o: { key?: CryptoKey; sign?: boolean } = {}) => {
-  const ts = Date.now() + 1000; // позже последнего запроса хоста — иначе Worker примет за повтор
+  const ts = Date.now() + 1000; // after the host's last request, or the Worker takes it for a replay
   const body = JSON.stringify({ ack: 0 });
   const sig = await crypto.subtle.sign("Ed25519", o.key ?? keys.privateKey, new TextEncoder().encode(`/pull\n${ts}\n${body}`));
   const headers: Record<string, string> = o.sign === false ? {} : { "x-relay-ts": String(ts), "x-relay-sig": Buffer.from(sig).toString("base64url") };
   return fetch(BASE + "/pull", { method: "POST", headers, body });
 };
 
-// ── подставной хост: настоящие Relay и Telegram, архитектор — заготовка ───────
+// ── mock host: the real Relay and Telegram, a canned architect ───────────────
 const approvals = new Approvals(tg);
 const got: { text: string; relayed?: boolean }[] = [];
 const ANSWERS: [RegExp, string][] = [
@@ -113,7 +113,7 @@ tg.onIncoming(async (m) => {
 
 let summary = "";
 try {
-  const o = await collect(false); // настоящая сводка этого Mac: сессии, сайты, нагрузка (без GitHub)
+  const o = await collect(false); // this Mac's real overview: sessions, sites, load (no GitHub)
   summary = `Сводка на ${hhmm(new Date(o.at))}:\n\n${render(o)}`;
 } catch (e) {
   summary = "Сводка на 12:00:\n\n**Сессии** — живых 2, работают 1";
@@ -124,7 +124,7 @@ const HELPER_LOG = join(TMP, "helper.jsonl");
 const helperSrc = join(TMP, "fake-powerwatch.ts");
 writeFileSync(
   helperSrc,
-  `// подставной помощник сна: SIGUSR1 — «Mac засыпает», SIGUSR2 — «проснулся»; замер — сколько сон ждёт хоста
+  `// mock sleep helper: SIGUSR1 means going to sleep, SIGUSR2 awake; it measures how long sleep waits for the host
 import { appendFileSync } from "node:fs";
 let seq = 0, t0 = 0;
 appendFileSync(${JSON.stringify(HELPER_LOG)}, JSON.stringify({ ready: true }) + "\\n");
@@ -136,81 +136,81 @@ process.exit(0);
 );
 
 await tg.start();
-await relay.drain(); // как при запуске хоста
+await relay.drain(); // as at host start
 const helper = watchPower(relay, [process.execPath, helperSrc]);
-await until("помощник запустился", () => existsSync(HELPER_LOG));
+await until("the helper to start", () => existsSync(HELPER_LOG));
 
-// ── 1. Mac засыпает ─────────────────────────────────────────────────────────
+// ── 1. the Mac goes to sleep ─────────────────────────────────────────────────
 phase = "asleep";
 const sleptAt = Date.now();
 helper.kill("SIGUSR1");
-await until("ok от хоста", () => existsSync(HELPER_LOG) && readFileSync(HELPER_LOG, "utf8").includes('"ok":1'));
+await until("ok from the host", () => existsSync(HELPER_LOG) && readFileSync(HELPER_LOG, "utf8").includes('"ok":1'));
 const handoffMs = JSON.parse(readFileSync(HELPER_LOG, "utf8").trim().split("\n").find((l) => l.includes('"ok":1'))!).ms as number;
 const set = calls.find((c) => c.method === "setWebhook");
 const stopCall = calls.find((c) => c.method === "getUpdates" && c.payload.limit === 1);
-check("засыпание: опрос остановлен раньше, чем поставлен webhook", !!set && !!stopCall && stopCall.at < set.at);
-check("webhook — на Worker по случайному пути из 43 знаков", /^http:\/\/127\.0\.0\.1:8791\/u\/[A-Za-z0-9_-]{43}$/.test(webhook));
-check("путь не попал в журнал хоста", !readFileSync(join(LOGS, "host.log"), "utf8").includes(webhook.split("/u/")[1]));
-check("сон ждал хоста меньше 20 с", handoffMs < 20_000, `${handoffMs} мс`);
+check("sleep: polling stopped before the webhook was set", !!set && !!stopCall && stopCall.at < set.at);
+check("the webhook points to the Worker under a random 43-character path", /^http:\/\/127\.0\.0\.1:8791\/u\/[A-Za-z0-9_-]{43}$/.test(webhook));
+check("the path stayed out of the host log", !readFileSync(join(LOGS, "host.log"), "utf8").includes(webhook.split("/u/")[1]));
+check("sleep waited for the host less than 20 s", handoffMs < 20_000, `${handoffMs} ms`);
 
-// ── 2. владелец пишет, пока Mac спит ─────────────────────────────────────────
+// ── 2. the owner writes while the Mac sleeps ─────────────────────────────────
 const m1 = ownerMsg("В маяке упал прогон на main, разберись");
 const r1 = await deliver(m1);
-const retry = await deliver(m1, webhook, false); // Telegram не получил 200 и прислал тот же апдейт снова
+const retry = await deliver(m1, webhook, false); // Telegram got no 200 and resends the same update
 const r2 = await deliver(ownerMsg("Что у нас?"));
 const m3 = ownerMsg("И потом сними арену на телефоне");
 const r3 = await deliver(m3);
-check("ответ на задачу — телом webhook, без токена", r1.call?.method === "sendMessage" && /^Mac спит с \d\d:\d\d\. Запомнил — начну, когда проснётся\.$/.test(r1.call.text), r1.call?.text);
-check("повтор доставки — тот же ответ, очередь не растёт", retry.call?.text === r1.call?.text && r3.call?.text === "Запомнил — в очереди 2. Начну, когда Mac проснётся.", r3.call?.text);
+check("a task gets its reply in the webhook body, without a token", r1.call?.method === "sendMessage" && /^Mac спит с \d\d:\d\d\. Запомнил — начну, когда проснётся\.$/.test(r1.call.text), r1.call?.text);
+check("a redelivery gets the same reply and the queue doesn't grow", retry.call?.text === r1.call?.text && r3.call?.text === "Запомнил — в очереди 2. Начну, когда Mac проснётся.", r3.call?.text);
 check(
-  "«что у нас» — сводкой из снимка перед сном, без разметки и значков",
+  "what's up gets the pre-sleep summary, without markup or emoji",
   r2.call?.text?.startsWith("Mac спит с ") && /Сводка на \d\d:\d\d:\n\n/.test(r2.call.text) && /\nMac — нагрузка/.test(r2.call.text) && !/\p{Extended_Pictographic}/u.test(r2.call.text),
 );
-check("до хоста во сне ничего не дошло", got.length === 0);
+check("nothing reached the host during sleep", got.length === 0);
 const wrong = await deliver(ownerMsg("чужой путь", false), webhook.replace(/\/u\/.+$/, "/u/" + "x".repeat(43)), false);
-check("чужой путь — 404", wrong.status === 404);
+check("a wrong path gets 404", wrong.status === 404);
 const stranger = await deliver({ update_id: ++uid, message: { message_id: ++nextId, date: 0, chat: { id: 5, type: "private" }, from: { id: 5, is_bot: false, first_name: "Чужой" }, text: "удали всё" } }, webhook, false);
-check("чужой аккаунт — без ответа и мимо очереди", stranger.status === 200 && stranger.call === null);
+check("a stranger gets no reply and isn't queued", stranger.status === 200 && stranger.call === null);
 const pressed = await deliver({ update_id: ++uid, callback_query: { id: "cb1", from: { id: OWNER, is_bot: false, first_name: "Владелец" }, chat_instance: "1", data: "a:abcd1234:y" } }, webhook, false);
-check("нажатие кнопки во сне — всплывашка, решения нет", pressed.call?.method === "answerCallbackQuery" && pressed.call.text === "Mac спит — нажмите, когда проснётся.");
-check("без подписи — 401", (await signedPull({ sign: false })).status === 401);
+check("a tap during sleep gets a toast and no decision", pressed.call?.method === "answerCallbackQuery" && pressed.call.text === "Mac спит — нажмите, когда проснётся.");
+check("no signature gets 401", (await signedPull({ sign: false })).status === 401);
 const otherKey = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
-check("чужой ключ — 401", (await signedPull({ key: otherKey.privateKey })).status === 401);
+check("another key gets 401", (await signedPull({ key: otherKey.privateKey })).status === 401);
 
-// ── 3. Mac просыпается ──────────────────────────────────────────────────────
+// ── 3. the Mac wakes up ──────────────────────────────────────────────────────
 phase = "woke";
 const wakeAt = performance.now();
 helper.kill("SIGUSR2");
-await until("ответы по существу", () => chat.filter((l) => l.via === "Mac" && l.phase === "woke").length >= 2);
+await until("real answers", () => chat.filter((l) => l.via === "Mac" && l.phase === "woke").length >= 2);
 const del = calls.find((c) => c.method === "deleteWebhook" && c.at > wakeAt);
-await until("снова опрос", () => calls.some((c) => c.method === "getUpdates" && c.payload.limit !== 1 && c.at > (del?.at ?? Infinity)));
+await until("polling again", () => calls.some((c) => c.method === "getUpdates" && c.payload.limit !== 1 && c.at > (del?.at ?? Infinity)));
 const resumed = calls.find((c) => c.method === "getUpdates" && c.payload.limit !== 1 && c.at > (del?.at ?? Infinity))!;
 const wakeMs = Math.round(resumed.at - wakeAt);
-check("пока webhook стоял, хост не опрашивал Telegram", !calls.some((c) => c.method === "getUpdates" && c.payload.limit !== 1 && c.at > set!.at && c.at < (del?.at ?? 0)));
-check("проснулся: webhook снят, очередь — по порядку, по разу, с пометкой «из облака»", !!del && JSON.stringify(got) === JSON.stringify([{ text: m1.message.text, relayed: true }, { text: m3.message.text, relayed: true }]), JSON.stringify(got));
+check("the host didn't poll Telegram while the webhook was set", !calls.some((c) => c.method === "getUpdates" && c.payload.limit !== 1 && c.at > set!.at && c.at < (del?.at ?? 0)));
+check("awake: the webhook is removed and the queue arrives in order, once, marked as relayed", !!del && JSON.stringify(got) === JSON.stringify([{ text: m1.message.text, relayed: true }, { text: m3.message.text, relayed: true }]), JSON.stringify(got));
 const after = (await (await signedPull()).json()) as { updates: unknown[] };
-check("очередь в облаке пуста", after.updates.length === 0);
-check("старый путь больше не принимается", (await deliver(ownerMsg("после", false), set!.payload.url, false)).status === 404);
+check("the cloud queue is empty", after.updates.length === 0);
+check("the old path is no longer accepted", (await deliver(ownerMsg("после", false), set!.payload.url, false)).status === 404);
 polled.push(m1, ownerMsg("Понял, спасибо", false));
-await until("сообщение опросом", () => got.length === 3);
+await until("a message through polling", () => got.length === 3);
 await Bun.sleep(200);
-check("опрос снова работает, повтор из Telegram не обработан второй раз", got.length === 3 && got[2].text === "Понял, спасибо" && !got[2].relayed);
+check("polling works again and a Telegram resend isn't handled twice", got.length === 3 && got[2].text === "Понял, спасибо" && !got[2].relayed);
 
-// ── итог ─────────────────────────────────────────────────────────────────────
+// ── result ───────────────────────────────────────────────────────────────────
 helper.stdin.end();
 await tg.stop();
 wrangler.kill("SIGTERM");
 await wrangler.exited;
 const timings = { handoffMs, wakeMs, webhookReplyMs: [r1.ms, r2.ms, r3.ms] };
 writeFileSync(join(OUT, "transcript.json"), JSON.stringify({ chat, checks, timings }, null, 1));
-for (const [name, ok, note] of checks) console.log(`${ok ? "ок   " : "СБОЙ "} ${name}${note ? ` — ${note}` : ""}`);
+for (const [name, ok, note] of checks) console.log(`${ok ? "ok   " : "FAIL "} ${name}${note ? ` — ${note}` : ""}`);
 console.log(JSON.stringify(timings));
 if (checks.some(([, ok]) => !ok)) {
   console.log(await wranglerLog);
   process.exit(1);
 }
 
-// ── стенд «Telegram для iOS»: что увидел бы владелец ──────────────────────────
+// ── "Telegram for iOS" mockup: what the owner would see ──────────────────────
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const md = (s: string) => esc(s).replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
 const at = (ms: number) => hhmm(new Date(ms));
@@ -282,5 +282,5 @@ try {
 } finally {
   await browser.close();
 }
-console.log(`стенд и снимки: ${OUT}`);
+console.log(`mockup and screenshots: ${OUT}`);
 process.exit(0);

@@ -17,6 +17,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      # каждый файл — своим процессом: тесты задают свою папку состояния до импорта модулей,
-      # а в одном процессе модули общие и состояние одного файла видно другому
+      # One process per file: each test sets its state folder before importing modules, which a shared process would share
       - run: for f in test/*.test.ts; do bun test "$f" || exit 1; done

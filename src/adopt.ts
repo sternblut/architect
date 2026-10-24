@@ -1,15 +1,15 @@
-// «archi adopt <имя>» — перевести сессию из вкладки, открытой до обёртки перезапуска, в новую вкладку с обёрткой.
-// Старый процесс завершается (разговор уже на диске), обёртка в новой вкладке поднимает тот же разговор. Дальше
-// архитектор перезапускает её с телефона сам. Печатает «папка<TAB>номер разговора» или, если нельзя, — почему.
+// "archi adopt <name>": move a session from a tab opened before the restart wrapper into a new tab that has it.
+// The old process ends (the conversation is on disk) and the wrapper resumes it in the new tab.
+// Prints "<folder><TAB><session id>", or why it can't.
 import { tr } from "./config";
 import { fits } from "./fast";
 import { listAgents, wrapVersion } from "./sessions";
 import { displayName } from "./ui";
 
-// --dry — только сказать, что было бы: проверять это на настоящих сессиях можно только так
+// --dry: only say what would happen, the safe way to try it on real sessions
 const dry = process.argv.includes("--dry");
 const want = process.argv.slice(2).filter((a) => a !== "--dry").join(" ").trim();
-// и фоновые: фоновая сессия бывает открыта во вкладке через attach — её тоже переводим на место
+// Background sessions too: one can be open in a tab through attach
 const rows = (await listAgents(true)).filter((r) => r.sessionId && r.pid);
 const words = want.toLowerCase().split(/[^\p{L}\p{N}*]+/u).filter(Boolean);
 const name = (r: (typeof rows)[number]) => displayName(r.sessionId!, r.cwd, rows);
@@ -34,7 +34,7 @@ if (dry) {
   process.exit(0);
 }
 if (r.kind === "background" && r.id) {
-  // фоновую останавливает сам Claude Code (разговор сохраняется); её окно attach во вкладке закроется само
+  // Claude Code stops it and keeps the conversation; its attach window closes by itself
   const st = Bun.spawnSync(["claude", "stop", r.id], { stdout: "pipe", stderr: "pipe" });
   if (st.exitCode !== 0) say(tr(`Фоновую «${name(r)}» остановить не вышло: ${st.stderr.toString().trim().slice(0, 160)}`, `Couldn’t stop background session “${name(r)}”: ${st.stderr.toString().trim().slice(0, 160)}`));
   console.log(`${r.cwd}\t${r.sessionId}`);
