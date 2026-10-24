@@ -569,7 +569,8 @@ const HUMAN: [RegExp, string][] = [
   [/^запись в папку архитектора$/, "запись в папку самого бота"],
   [/^удаление файлов из кода$/, "скрипт удаляет файлы"],
   [/^удаление содержимого файла$/, "файл станет пустым"],
-  [/^код запускает удаление, push, выкладку или письмо$/, "скрипт удаляет файлы, отправляет на GitHub, выкладывает или пишет людям"],
+  [/^код запускает удаление, push или выкладку$/, "скрипт удаляет файлы, отправляет на GitHub или выкладывает"],
+  [/^код пишет людям$/, "скрипт отправляет письмо людям"],
   [/^удаление через mv$/, "удаление через перенос"],
 ];
 // По-английски — и те причины, что по-русски видны как есть. Сами причины шлагбаума остаются русскими: их читают и сессии.
@@ -592,7 +593,8 @@ const REASONS_EN: [RegExp, string][] = [
   [/^запись в папку архитектора$/, "writing into the bot’s own folder"],
   [/^удаление файлов из кода$/, "the script deletes files"],
   [/^удаление содержимого файла$/, "the file will be emptied"],
-  [/^код запускает удаление, push, выкладку или письмо$/, "the script deletes files, pushes to GitHub, deploys or writes to people"],
+  [/^код запускает удаление, push или выкладку$/, "the script deletes files, pushes to GitHub or deploys"],
+  [/^код пишет людям$/, "the script sends email to people"],
   [/^удаление через mv$/, "deleting by moving"],
   [/^git (\S+) — неизвестная подкоманда \(алиас\?\)$/, "git $1 is an unknown command (an alias?)"],
   [/^удаление ветки$/, "deleting a branch"],
@@ -693,7 +695,7 @@ async function bash(input: Record<string, unknown>, cwd: string, shots: number, 
   const mine = who === tr("архитектор", "the architect");
   const where = p.name === ARCH() && dir === ARCH_HOME ? tr(" в папке архитектора", " in the architect’s folder") : ` ${inProj(p)}`;
   const why = v.reason
-    ? (/^(удаление файлов из кода|код запускает)/.test(v.reason) && codeRisk(command)) || tr(`Почему спрашиваю: ${mdEsc(human(v.reason))}`, `Why I’m asking: ${mdEsc(human(v.reason))}`)
+    ? (/^(удаление файлов из кода|код запускает|код пишет)/.test(v.reason) && codeRisk(command)) || tr(`Почему спрашиваю: ${mdEsc(human(v.reason))}`, `Why I’m asking: ${mdEsc(human(v.reason))}`)
     : tr("Сама команда — в «Подробнее»", "The command itself is under “Details”");
   if (!v.reason) return { head: isRu(desc) ? cap(mdEsc(asAsk(desc))) : `${verbOf(t)}${where}`, lines: [why], advice: tr("Советую разрешить: опасного тут не вижу", "I’d allow it: I see nothing risky here"), lean: "allow" };
   if (isRu(desc)) {
