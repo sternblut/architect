@@ -2,7 +2,7 @@
 // Ни архитектора, ни инструментов, ни сессий, ни данных владельца: сюда приходит сырое обновление Telegram, отсюда уходят
 // только заранее написанные тексты. Содержимое сообщений не пишется в журнал и никуда не передаётся; файлы не скачиваются.
 // Частота ограничена: на человека и на всех вместе.
-// Подключение (DESIGN-V.md): коннектор на Mac показывает QR со ссылкой /start c<ключ Mac> и код из четырёх цифр →
+// Подключение: коннектор на Mac показывает QR со ссылкой /start c<ключ Mac> и код из четырёх цифр →
 // человек вводит код с экрана своего Mac (ссылку можно переслать, код — только увидеть) → кнопка «Создать моего бота»
 // (managed bots, Bot API 9.6) → токен его бота запечатывается на ключ его Mac и кладётся в ящик (src/box.ts).
 // Токен живёт только в памяти, пока запечатывается.
@@ -315,7 +315,7 @@ export async function buildDist(out: string, manager: string) {
   const { existsSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
   mkdirSync(out, { recursive: true });
   const tgz = join(out, "archi.tgz");
-  const files = ["src", "bin/arch", "bin/install.sh", "package.json", "bun.lock", "tsconfig.json", "CLAUDE.md", "DESIGN-V.md"].filter((f) => existsSync(join(ARCH_HOME, f)));
+  const files = ["src", "bin/arch", "bin/install.sh", "package.json", "bun.lock", "tsconfig.json", "CLAUDE.md"].filter((f) => existsSync(join(ARCH_HOME, f)));
   const tar = Bun.spawnSync(["tar", "-czf", tgz, "--exclude", "*.test.ts", "-C", ARCH_HOME, ...files], { stderr: "pipe" });
   if (tar.exitCode !== 0) throw new Error(`tar: ${tar.stderr.toString()}`);
   const sha = new Bun.CryptoHasher("sha256").update(readFileSync(tgz)).digest("hex");

@@ -118,7 +118,7 @@ const json = (o: unknown) => new Response(JSON.stringify(o), { headers: { "conte
 const ok = () => new Response(null, { status: 200 });
 const none = () => new Response(null, { status: 404 });
 
-// Ящик подключения нового Mac (DESIGN-V.md §4, образец протокола — test/mock-relay.ts). Конверт кладёт менеджер, забирает
+// Ящик подключения нового Mac (образец протокола — test/mock-relay.ts, шифр — src/box.ts). Конверт кладёт менеджер, забирает
 // Mac: внутри шифр на ключ этого Mac и подпись менеджера — ни токенов, ни имён, ни номеров. Имя ящика — хеш ключа Mac.
 //   POST /v1/box/{id}          — положить конверт (JSON до 8 КБ, в ящике до 8 конвертов) → 201
 //   GET  /v1/box/{id}?wait=25  — {messages: [...]}: сразу, если есть, иначе ждём до wait секунд

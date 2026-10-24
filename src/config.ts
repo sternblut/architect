@@ -42,6 +42,9 @@ export type Config = {
   sites: Site[];
   repos: string[];
   hostingPattern: string;
+  spendPattern?: string; // свои платные команды (регулярное выражение): шлагбаум спрашивает о них как о трате
+  repoPrefix?: string; // общий префикс имён репозиториев: в карточках проект называется без него
+  monitor?: { width: number; height: number }; // окно своего монитора для снимков страниц
   richMessages?: boolean; // rich-сообщения Bot API 10.1+; false — старый HTML
   voice?: { whisper: string; model: string; language: string; vocab?: string };
   relay?: { url: string }; // дежурный в облаке, пока Mac спит (relay/, src/relay.ts); без него бот во сне молчит

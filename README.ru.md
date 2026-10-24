@@ -132,7 +132,7 @@ flowchart LR
 
 ## Документация
 
-[Подробная инструкция](docs/guide.ru.md) и записки о том, почему всё устроено так: [DESIGN.md](DESIGN.md), [DECISIONS.md](DECISIONS.md).
+[Подробная инструкция](docs/guide.ru.md).
 
 ## Лицензия
 

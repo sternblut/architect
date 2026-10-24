@@ -120,7 +120,7 @@ case "${1:-help}" in
     [ -n "$BOTNAME" ] && echo "$(t "Откройте на iPhone или Mac" "Open on your iPhone or Mac"): https://t.me/$BOTNAME?start=$code"
     echo "$(t "Или напишите боту${BOTNAME:+ @$BOTNAME} код $code (действует 30 минут, 5 попыток)." "Or send the bot${BOTNAME:+ @$BOTNAME} the code $code (valid for 30 minutes, 5 tries).")" ;;
   connect)
-    # подключение одной кнопкой (managed bots, DESIGN-V.md): бот-менеджер, его открытый ключ и адрес ящика — в connect.json
+    # подключение одной кнопкой (managed bots): бот-менеджер, его открытый ключ и адрес ящика — в connect.json
     # раздачи. Без терминала (/architect:connect) «да» приходит отдельной командой: archi connect --yes | --no
     case "${2:-}" in --yes | --no) mkdir -p "$STATEDIR" && echo "${2#--}" >"$STATEDIR/connect.answer"; exit 0 ;; esac
     [ -f "$ARCH/connect.json" ] || { echo "$(t "Подключение одной кнопкой здесь не настроено — нужен свой бот: archi token, затем archi on и archi pair" "One-button connection isn’t set up here — use your own bot: archi token, then archi on and archi pair")"; exit 3; }
