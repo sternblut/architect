@@ -185,7 +185,7 @@ export function architectVerdict(tool: string, input: Record<string, unknown>): 
   if (tool === "mcp__arch__stop_session") return { decision: "ask", reason: tr("работа прервётся, разговор сохранится — продолжить можно позже", "work will stop; the conversation is kept, so it can resume later") };
   if (tool === "mcp__arch__set_goal" || tool === "mcp__arch__clear_goal") return { decision: "ask", reason: tr("цель сессии меняется только с вашего разрешения", "a session’s goal changes only with your permission") };
   if (tool === "mcp__arch__start_session" && input.goal) return { decision: "ask", reason: tr("сессия с целью работает без остановок, пока цель не выполнена", "a session with a goal keeps working until the goal is met") };
-  return classifyTool(tool, input, { cwd: ARCH_HOME, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync });
+  return classifyTool(tool, input, { cwd: ARCH_HOME, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, ask: config.ask });
 }
 
 // Openers about itself ("Got it.", "Passed your words to X verbatim.", "You're right") break the writing rules, yet the

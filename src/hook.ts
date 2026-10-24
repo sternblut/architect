@@ -59,6 +59,7 @@ const verdict = classifyTool(input.tool_name, input.tool_input ?? {}, {
   spendPattern: config.spendPattern,
   keychainService: config.keychainService,
   branch: gitBranchSync,
+  ask: config.ask,
 });
 const out = (o: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...o } });
 

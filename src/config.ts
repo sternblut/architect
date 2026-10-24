@@ -32,6 +32,8 @@ export const PROJECTS = join(HOME, ".claude", "projects");
 
 // keychain: the Keychain service holding a protected site's visitor password (account "admin"); only the screenshot process reads it
 export type Site = { name: string; url: string; repo?: string; keychain?: string };
+export type AskKind = "delete" | "main" | "deploy" | "spend" | "people";
+
 export type Config = {
   keychainService: string;
   keychainAccount: string;
@@ -46,6 +48,7 @@ export type Config = {
   spendPattern?: string; // regex of paid commands; the gate asks about them as spending
   repoPrefix?: string; // shared repo name prefix, dropped from project names in cards
   monitor?: { width: number; height: number }; // desktop viewport for page screenshots
+  ask?: AskKind[]; // which of the owner's five points still get a button; all five by default. Hosting is always refused
   richMessages?: boolean; // Bot API 10.1+ rich messages; false falls back to HTML
   voice?: { whisper: string; model: string; language: string; vocab?: string };
   relay?: { url: string }; // cloud relay that answers while the Mac sleeps (relay/, src/relay.ts)

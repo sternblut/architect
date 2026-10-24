@@ -13,6 +13,7 @@ export type PolicyContext = {
   spendPattern?: string;
   keychainService: string;
   branch?: (cwd: string) => string;
+  ask?: string[]; // which of the owner's five points to ask about; all of them when absent
 };
 
 const OK: Verdict = { decision: "ok", reason: "" };
@@ -239,7 +240,8 @@ const SAFE_RM =
 // business inside it (push, merge, deploy, email). Writing files, network and running programs are ordinary research
 // and build work that shouldn't need a button each time.
 const CODE_DELETES = /\b(unlink|rmtree|rmSync|rmdirSync|rimraf|unlinkSync|removedirs)\b|\bos\.(remove|rmdir|truncate)\b|\.(unlink|rmdir)\(|\bfs\.(promises\.)?(rm|unlink|truncate)\w*|\bFile\.(delete|unlink)\b/;
-const CODE_OWNER_DEEDS = /\brm\s+-[a-zA-Z]*[rf]|\bgit\s+push\b|\bgh\s+pr\s+merge\b|\b(deploy|publish)\b|\bscp\b|\brsync\b|\bsendmail\b|\bsmtplib\b|\|\s*(ba|z)?sh\b/;
+const CODE_OWNER_DEEDS = /\brm\s+-[a-zA-Z]*[rf]|\bgit\s+push\b|\bgh\s+pr\s+merge\b|\b(deploy|publish)\b|\bscp\b|\brsync\b|\|\s*(ba|z)?sh\b/;
+const CODE_MAILS = /\bsendmail\b|\bsmtplib\b/;
 
 const DEPLOY_SCRIPT = /(^|\/)(ship|deploy|publish|release)([\w.-]*)?(\.(sh|py|mjs|cjs|js|ts))?$/i;
 const DEPLOY_WORD = /^(deploy|publish|release|ship)([:_-]\w*)?$|(^|[:_-])(deploy|publish|release|ship)$/i;
@@ -477,7 +479,8 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
     const codeIdx = t.findIndex((x, k) => k > 0 && /^(-c|-e|--eval|-p|-r)$/.test(x));
     const code = shell ? "" : [codeIdx > 0 ? t.slice(codeIdx + 1).join(" ") : "", codeFromStdin ? stdin : ""].join("\n").trim();
     if (code && CODE_DELETES.test(code)) v = worst(v, ask("удаление файлов из кода"));
-    if (code && CODE_OWNER_DEEDS.test(code)) v = worst(v, ask("код запускает удаление, push, выкладку или письмо"));
+    if (code && CODE_OWNER_DEEDS.test(code)) v = worst(v, ask("код запускает удаление, push или выкладку"));
+    if (code && CODE_MAILS.test(code)) v = worst(v, ask("код пишет людям"));
     // `… | sh`, `curl … | bash`: what runs is not visible
     if (shell && piped && !t.slice(1).some((x) => !x.startsWith("-"))) v = worst(v, ask("исполнение потока в оболочке — что именно, не видно"));
     const script = t.slice(1).find((x) => !x.startsWith("-"));
@@ -601,7 +604,27 @@ export function classifyCommand(t: string[], ctx: PolicyContext): Verdict {
   return commandRules(t, ctx, new RegExp(ctx.hostingPattern, "i"), 0);
 }
 
+// Which of the owner's five points a gate question belongs to. Other questions protect the Mac and the bot itself
+// (keys, shell, keychain, Terminal), and the owner cannot turn them off.
+export function askKind(reason: string): "delete" | "main" | "deploy" | "spend" | "people" | undefined {
+  // a push hidden behind an alias, the bot's keychain entries and history rewrites on GitHub are asked about whatever the setting
+  if (/алиас|связк|push с перезаписью/.test(reason)) return undefined;
+  if (/трат|создание ресурсов в AWS/.test(reason)) return "spend";
+  if (/письм|сообщение людям|пишет людям/.test(reason)) return "people";
+  if (/push в main|gh pr merge|push всех веток|push с перезаписью|сброс main/.test(reason)) return "main";
+  if (/выкладк|публикация|изменение инфраструктуры|изменение кластера|изменение в AWS|облачное хранилище|gh (workflow|run|release)/.test(reason)) return "deploy";
+  if (/удален|удаля|git clean|перемещение файла с возможной перезаписью/.test(reason)) return "delete";
+  return undefined;
+}
+
 export function classifyTool(tool: string, input: Record<string, unknown>, ctx: PolicyContext): Verdict {
+  const v = classifyToolAll(tool, input, ctx);
+  const kind = v.decision === "ask" ? askKind(v.reason) : undefined;
+  // points the owner turned off in config.ask run without a button
+  return kind && ctx.ask && !ctx.ask.includes(kind) ? OK : v;
+}
+
+function classifyToolAll(tool: string, input: Record<string, unknown>, ctx: PolicyContext): Verdict {
   if (tool === "Bash") return classifyBash(String(input?.command ?? ""), ctx);
   if (!tool.startsWith("mcp__")) return OK;
   const t = tool.toLowerCase();

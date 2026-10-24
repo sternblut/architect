@@ -363,3 +363,22 @@ describe("the owner's paid commands from the settings count as spending", () => 
     expect(d("python3 pairs_round.py --launch")).toBe("ok");
   });
 });
+
+// The owner turned off some of his five points (config.ask). Without the setting all five are asked.
+describe("questions follow the owner's ask setting", () => {
+  const own = { ...ctx("main"), ask: ["spend", "people"] };
+  const v = (c: string) => classifyTool("Bash", { command: c }, own).decision;
+  test("deleting, pushing to main and deploying go without a button", () => {
+    for (const c of ["rm -rf old-frames", "git push origin main", "gh pr merge 7 --merge", "npx vercel --prod", `python3 -c 'import shutil; shutil.rmtree("x")'`]) expect(v(c)).toBe("ok");
+  });
+  test("spending and writing to people are still asked", () => {
+    expect(v("python3 rapidata_run.py rapidata order create")).toBe("ask");
+    expect(v("sendmail team@example.com < note.txt")).toBe("ask");
+    expect(v(`python3 -c 'import smtplib; smtplib.SMTP("x")'`)).toBe("ask");
+  });
+  test("Mac and bot protection, history rewrites and disguised pushes are asked whatever the setting", () => {
+    for (const c of ["echo x >> ~/.zshrc", "git push --force origin main", "git config alias.yolo '!git push origin main'", "security delete-generic-password -s archi-telegram"]) expect(v(c)).toBe("ask");
+  });
+  test("direct hosting access is always refused", () => expect(v("scp dist/x user@hosting.example.net:/www/")).toBe("deny"));
+  test("without the setting, as before", () => expect(classifyTool("Bash", { command: "rm -rf old-frames" }, ctx()).decision).toBe("ask"));
+});
