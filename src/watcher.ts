@@ -13,13 +13,12 @@ import type { Telegram } from "./telegram";
 import type { Board } from "./board";
 import type { SessionUI } from "./ui";
 import { shoot } from "./shots";
-import { API_ERROR } from "./hookserver";
+import { API_ERROR, looksLikeQuestion } from "./hookserver";
 import { hhmm, log, run } from "./util";
 
 type Seen = { state?: string; status?: string; waitingFor?: string; since: number; alerted?: boolean; idleSince?: number; relayedText?: string };
 type Deploy = { repo: string; since: number; action: string; sessionId?: string; cwd?: string; settle?: (tail: string) => void }; // settle: the approval card's last line
 
-const looksLikeQuestion = (t: string) => /\?\s*$|\?\s*\n|[?？]\s*(\*\*)?\s*$/.test(t.trim().slice(-400)) || /жду (вашего|ваш|«)|скажите|выберите|подтвердите/i.test(t.slice(-400));
 
 export class Watcher {
   private seen = new Map<string, Seen>();
