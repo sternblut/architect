@@ -357,16 +357,6 @@ export function sessionDigest(row: AgentRow): Digest {
 
 // ── finding a session by the owner's word ────────────────────────────────────
 
-export async function findSession(key: string): Promise<AgentRow | undefined> {
-  const rows = await listAgents(true);
-  const k = key.trim().toLowerCase();
-  return (
-    rows.find((r) => r.id === k || r.sessionId === k || r.sessionId?.startsWith(k)) ??
-    rows.find((r) => (r.name ?? "").toLowerCase() === k) ??
-    rows.find((r) => (r.name ?? "").toLowerCase().includes(k))
-  );
-}
-
 // ── start and stop ───────────────────────────────────────────────────────────
 
 export function resolveFolder(folder: string): string {

@@ -25,7 +25,7 @@ import { actionsSince, deliver, listAgents, outbox, readTail, setClaudeBin, setC
 import { makeCourier } from "./courier";
 import { Telegram, type Incoming } from "./telegram";
 import { makeTools } from "./tools";
-import { SessionUI, displayName } from "./ui";
+import { SessionUI, sessionLabel } from "./ui";
 import { clip, hhmm, log, readJson, registerSecret } from "./util";
 import { Watcher } from "./watcher";
 
@@ -225,8 +225,8 @@ const morning = () => {
       const worked = night
         .filter(({ r }) => !understood(r.sessionId)?.spinning)
         .sort((x, y) => y.a.n - x.a.n)
-        .map(({ r, a }) => ({ name: displayName(r.sessionId!, r.cwd, rows), doing: fresh(r.sessionId!, a.last)?.doing || undefined, until: a.last }));
-      const pages = rows.flatMap((r) => pagesOf(r.sessionId).filter((p) => p.at >= midnight).map((p) => ({ name: displayName(r.sessionId!, r.cwd, rows), title: p.title, url: p.url })));
+        .map(({ r, a }) => ({ name: sessionLabel(r.sessionId!, r.cwd, rows), doing: fresh(r.sessionId!, a.last)?.doing || undefined, until: a.last }));
+      const pages = rows.flatMap((r) => pagesOf(r.sessionId).filter((p) => p.at >= midnight).map((p) => ({ name: sessionLabel(r.sessionId!, r.cwd, rows), title: p.title, url: p.url })));
       // held messages go to the architect, which adds what matters; if it can't reply, the summary lists the last five
       const down = !!architect.downUntil() || architect.authBroken;
       const { md, buttons } = morningMd({ view: board.snapshot(await collect(false)), worked, pages, held: down ? held.map((h) => h.text) : [] });
@@ -269,7 +269,7 @@ tg.onCallback("sg", async ({ id, value, messageId, answer }) => {
   const reply = text.match(tr(/^Ответить:\s*(.+)$/, /^Reply:\s*(.+)$/))?.[1]?.trim();
   if (reply) {
     const rows = await listAgents(true);
-    const r = rows.find((x) => x.sessionId && displayName(x.sessionId, x.cwd, rows) === reply);
+    const r = rows.find((x) => x.sessionId && sessionLabel(x.sessionId, x.cwd, rows) === reply);
     if (r?.sessionId) {
       await answer(tr("Напишите ответ", "Type your reply"));
       return void (await ui.askReply(r.sessionId, r.cwd));
@@ -400,7 +400,7 @@ tg.onIncoming(async (m) => {
     // preview links from the registry, so "where are the links?" is answered from facts
     const links = (o?.rows ?? [])
       .filter((r) => r.sessionId && pagesOf(r.sessionId).length)
-      .flatMap((r) => pagesOf(r.sessionId).slice(0, 3).map((p) => `${displayName(r.sessionId!, r.cwd, o!.rows)}${p.title ? ` — «${p.title}»` : ""}, ${whenHuman(p.at)}: ${p.url}`))
+      .flatMap((r) => pagesOf(r.sessionId).slice(0, 3).map((p) => `${sessionLabel(r.sessionId!, r.cwd, o!.rows)}${p.title ? ` — «${p.title}»` : ""}, ${whenHuman(p.at)}: ${p.url}`))
       .slice(0, 8);
     // the Claude limits in full, which the architect can't see otherwise
     const lim = o?.limits;

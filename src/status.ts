@@ -3,7 +3,7 @@ import { looping, understood } from "./understand";
 import { config, tr } from "./config";
 import { listAgents, sessionDigest, type AgentRow } from "./sessions";
 import { mdEsc } from "./md";
-import { clean, displayName } from "./ui";
+import { clean, sessionLabel } from "./ui";
 import { recentEnd } from "./limits";
 import { clip, hhmm, run } from "./util";
 
@@ -234,15 +234,7 @@ const lower = (s: string) => (tr(/^[А-ЯЁ][а-яё]/, /^[A-Z][a-z]+\b/).test(s
 
 export function view(o: Overview, x: Extra = {}): View {
   const live = o.rows.filter((r) => r.sessionId && (r.pid || r.state === "working" || r.state === "blocked"));
-  // two sessions with the same name are told apart by when they started
-  const base = (r: AgentRow) => displayName(r.sessionId!, r.cwd, o.rows);
-  const same = (r: AgentRow) => live.filter((x) => base(x) === base(r));
-  const since = (r: AgentRow, all: AgentRow[]) => {
-    const t = r.startedAt ?? 0;
-    const day = (x: number) => tr(new Date(x + off(x)).toISOString().slice(5, 10).split("-").reverse().join("."), date(x));
-    return all.every((x) => x === r || day(x.startedAt ?? 0) !== day(t)) ? day(t) : hhmm(new Date(t));
-  };
-  const name = (r: AgentRow) => (same(r).length > 1 && r.startedAt ? `${base(r)} (${tr("с", "since")} ${since(r, same(r))})` : base(r));
+  const name = (r: AgentRow) => sessionLabel(r.sessionId!, r.cwd, o.rows);
   const asks = x.asks ?? [];
   const asked = (r: AgentRow) => asks.some((a) => a.sessionId === r.sessionId || a.name === name(r));
   const waiting: Item[] = asks.map((a) => ({ ...a, ask: true }));
