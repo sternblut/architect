@@ -218,6 +218,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
           const r = await findSession(session);
           if (!r) return fail(`Сессию «${session}» не нашёл.`);
           const res = await setGoal(r, condition);
+          if (res.how === "queued") return text("Поставлю цель, как только она закончит текущий шаг.");
           return res.ok ? text("Цель поставлена — сессия работает, пока она не достигнута.") : fail(`Не поставил: ${res.note}`);
         },
         { alwaysLoad: true },
@@ -231,6 +232,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
           const r = await findSession(session);
           if (!r) return fail(`Сессию «${session}» не нашёл.`);
           const res = await setGoal(r, null);
+          if (res.how === "queued") return text("Сниму цель, как только она закончит текущий шаг.");
           return res.ok ? text("Цель снята.") : fail(`Не снял: ${res.note}`);
         },
         { alwaysLoad: true },

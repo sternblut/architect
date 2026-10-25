@@ -438,11 +438,9 @@ export async function stopSession(id: string): Promise<string> {
 // Sets or clears a session's /goal. A background session takes it on wake-up; a Terminal session only through the
 // restart wrapper (v2), since Claude Code takes no commands from outside.
 export async function setGoal(row: AgentRow, condition: string | null): Promise<Delivery> {
-  if (row.kind !== "background" && (await wrapVersion(row)) >= 2) return deliver(row, condition ? `/goal ${condition.replace(/\s+/g, " ").trim()}` : "/goal clear");
-  if (row.kind !== "background" || !row.sessionId || !row.id)
-    return { ok: false, how: "failed", note: "это сессия из Терминала: цель ставится фоновой сессии. Сначала restart_session — она продолжит в фоне с того же места, — потом цель" };
-  if (row.status === "busy" || (row.state === "working" && row.status !== "idle"))
-    return { ok: false, how: "failed", note: "сессия сейчас работает: поставить или снять цель значит прервать её ход. Дождись, пока она закончит (SendMessage с notify_when_idle), или спроси владельца, прерывать ли" };
+  if (row.kind !== "background" && (await wrapVersion(row)) < 2)
+    return { ok: false, how: "failed", note: "это сессия из Терминала без обёртки перезапуска: цель ставится фоновой сессии или сессии во вкладке с обёрткой" };
+  // a busy session gets it once it has finished its step
   return deliver(row, condition ? `/goal ${condition.replace(/\s+/g, " ").trim()}` : "/goal clear");
 }
 
@@ -462,12 +460,12 @@ async function restartNow(row: AgentRow): Promise<Delivery> {
   }
   if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) return { ok: false, how: "queued", note: tr("занята", "busy") };
   if (row.kind === "background" && row.id) {
-    // Open in a Terminal tab through `claude attach`: respawn would close the tab ("Session has exited").
-    // Treated as an old tab, which `archi adopt` moves.
-    if (await attachedInTab(row.id)) return { ok: false, how: "old-tab", note: tr("она открыта во вкладке Терминала через attach: перезапуск закрыл бы вкладку", "it’s open in a Terminal tab through attach: restarting would close the tab") };
-    const r = await run([claudeBin, "respawn", row.id], { timeoutMs: 60_000 });
-    const out = (r.stdout + r.stderr).trim();
-    return /respawned/i.test(out) ? { ok: true, how: "resumed", note: tr("перезапущена", "restarted") } : { ok: false, how: "failed", note: clip(out || tr("claude не ответил", "claude didn’t respond"), 200), raw: !!out };
+    const id = row.id;
+    return aroundTabs(row, async () => {
+      const r = await run([claudeBin, "respawn", id], { timeoutMs: 60_000 });
+      const out = (r.stdout + r.stderr).trim();
+      return /respawned/i.test(out) ? { ok: true, how: "resumed", note: tr("перезапущена", "restarted") } : { ok: false, how: "failed", note: clip(out || tr("claude не ответил", "claude didn’t respond"), 200), raw: !!out };
+    });
   }
   // A Terminal session restarts only in its own tab (moving it to the background would close the tab); that takes
   // bin/claude-wrap.zsh. Without the wrapper it is left alone.
@@ -513,10 +511,48 @@ async function dropCopy(copyId: string, out: string): Promise<Delivery> {
   return { ok: false, how: "failed", note: tr("Claude Code завёл копию разговора вместо продолжения — копию остановил, сообщение не передано", "Claude Code started a copy of the conversation instead of continuing it — stopped the copy, the message wasn’t delivered") };
 }
 
-// Whether a background session is open in a Terminal tab through `claude attach <id>`
-export async function attachedInTab(id: string): Promise<boolean> {
-  const r = await run([psBin, "-axo", "tty=,args="], { timeoutMs: 5000 });
-  return r.stdout.split("\n").some((l) => !/^\s*\?\?/.test(l) && new RegExp(`claude attach ${id.replace(/[^\w-]/g, "")}(\s|$)`).test(l));
+// The Terminal tabs showing a background session through `claude attach <id>`: the shells of those that attach again
+// after a restart (bin/claude-wrap.zsh marks them), and how many others there are
+export async function attachTabs(id: string): Promise<{ shells: number[]; old: number }> {
+  const r = await run([psBin, "-axo", "pid=,ppid=,tty=,args="], { timeoutMs: 5000 });
+  const attach = new RegExp(`claude attach ${id.replace(/[^\w-]/g, "")}(\s|$)`);
+  const tabs = { shells: [] as number[], old: 0 };
+  for (const l of r.stdout.split("\n")) {
+    const m = l.match(/^\s*\d+\s+(\d+)\s+(\S+)\s+(.*)$/);
+    if (!m || m[2].startsWith("??") || !attach.test(m[3])) continue;
+    const mark = join(RESTART_DIR, `${m[1]}.attach`);
+    if (existsSync(mark) && readFileSync(mark, "utf8").startsWith("v1 ")) tabs.shells.push(Number(m[1]));
+    else tabs.old++;
+  }
+  return tabs;
+}
+
+// A restart ends the `claude attach` of the tabs showing the session. A tab with the wrapper attaches again once the
+// session is back; a tab without it would stay on "Session has exited", so then nothing restarts. detached() waits
+// until those attach clients are gone: while one is still connected, Claude Code takes the session for running and a
+// resume would start a copy.
+async function aroundTabs(row: AgentRow, restart: (detached: () => Promise<void>) => Promise<Delivery>): Promise<Delivery> {
+  const tabs = await attachTabs(row.id!);
+  if (tabs.old)
+    return {
+      ok: false,
+      how: "old-tab",
+      note: tr(
+        `она открыта во вкладке Терминала без обёртки перезапуска: перезапуск оставил бы вкладку пустой. Если открыть её заново в новой вкладке (claude attach ${row.id}), смогу`,
+        `it’s open in a Terminal tab without the restart wrapper: a restart would leave the tab empty. If you reopen it in a new tab (claude attach ${row.id}), I can`,
+      ),
+    };
+  const flag = (shell: number) => join(RESTART_DIR, `${shell}.reattach`);
+  for (const s of tabs.shells) writeFileSync(flag(s), `${row.id}\nwait\n`);
+  const detached = async () => {
+    for (let i = 0; i < 30 && (await attachTabs(row.id!)).shells.length; i++) await Bun.sleep(500);
+  };
+  try {
+    return await restart(detached);
+  } finally {
+    const id = (await listAgents(true).catch(() => [] as AgentRow[])).find((x) => x.sessionId === row.sessionId)?.id ?? row.id;
+    for (const s of tabs.shells) writeFileSync(flag(s), `${id}\ngo\n`);
+  }
 }
 
 // Why a Terminal session can't be restarted in its tab; undefined if it can
@@ -563,10 +599,16 @@ async function restartInTab(row: AgentRow, prompt?: string): Promise<Delivery> {
 // Restarts of busy sessions, done once they end their turn (the watcher checks every 10 s)
 const RESTARTS = join(STATE, "restarts.json");
 export const pendingRestarts = {
-  // When it was asked for, and an optional message to resume with; older state stored only the time
-  all: () => Object.fromEntries(Object.entries(readJson<Record<string, number | { at: number; prompt?: string }>>(RESTARTS, {})).map(([k, v]) => [k, typeof v === "number" ? { at: v } : v])) as Record<string, { at: number; prompt?: string }>,
+  // When it was asked for, an optional message to resume with, and what came after it (then), passed on in order;
+  // older state stored only the time
+  all: () => Object.fromEntries(Object.entries(readJson<Record<string, number | { at: number; prompt?: string; then?: string[] }>>(RESTARTS, {})).map(([k, v]) => [k, typeof v === "number" ? { at: v } : v])) as Record<string, { at: number; prompt?: string; then?: string[] }>,
   add(sessionId: string, prompt?: string) {
-    writeJson(RESTARTS, { ...this.all(), [sessionId]: { at: Date.now(), prompt } });
+    const all = this.all();
+    const was = all[sessionId];
+    // a message after one that is still waiting waits behind it
+    if (was?.prompt && prompt) was.then = [...(was.then ?? []), prompt];
+    else all[sessionId] = { at: Date.now(), prompt, ...(was?.then ? { then: was.then } : {}) };
+    writeJson(RESTARTS, all);
   },
   remove(sessionId: string) {
     const all = this.all();
@@ -574,6 +616,32 @@ export const pendingRestarts = {
     writeJson(RESTARTS, all);
   },
 };
+
+// What waited for a session to end its step, once it has: the owner's own message (or a restart), then what came after
+// it, in order. Returns what happened, for one line to the owner.
+export async function deliverQueued(rows: AgentRow[]): Promise<{ row: AgentRow; prompt?: string; res: Delivery }[]> {
+  const done: { row: AgentRow; prompt?: string; res: Delivery }[] = [];
+  for (const [sessionId, p] of Object.entries(pendingRestarts.all())) {
+    const r = rows.find((x) => x.sessionId === sessionId && x.pid);
+    if (!r || Date.now() - p.at > 12 * 3600_000) {
+      pendingRestarts.remove(sessionId);
+      continue;
+    }
+    if (r.status === "busy" || r.state === "working" || (r.waitingFor && r.waitingFor !== "input needed")) continue;
+    pendingRestarts.remove(sessionId);
+    const res = p.prompt ? await deliver(r, p.prompt) : await restartSession(r);
+    if (res.how === "queued") {
+      for (const t of p.then ?? []) pendingRestarts.add(sessionId, t); // still behind it
+      continue;
+    }
+    for (const t of p.then ?? []) {
+      const next = await deliver(r, t);
+      if (!next.ok) log("sessions", "следом не передал", { sid: sessionId.slice(0, 8), how: next.how, note: clip(next.note, 200) });
+    }
+    done.push({ row: r, prompt: p.prompt, res });
+  }
+  return done;
+}
 
 // raw: note is program output, not our words, and is not shown to the owner
 export type Delivery = { ok: boolean; how: "queued" | "sent" | "resumed" | "needs-sendmessage" | "failed" | "old-tab" | "self"; note: string; raw?: boolean };
@@ -590,8 +658,14 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
   const w = row.sessionId ? workers.get(row.sessionId) : undefined;
   const busy = row.status === "busy" || (row.state === "working" && row.status !== "idle" && !!row.pid);
   const onPermission = row.waitingFor === "permission prompt";
-  // our own busy session gets the text at the end of its step, in order with the other answers
-  if ((busy || onPermission) && w && row.sessionId) {
+  const own = ownMessage(text);
+  // behind the owner's own message that is still waiting for this session, in order
+  if (row.sessionId && pendingRestarts.all()[row.sessionId]?.prompt) {
+    pendingRestarts.add(row.sessionId, text);
+    return { ok: true, how: "queued", note: tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step") };
+  }
+  // our own busy session gets words at the end of its step, in order with the other answers
+  if (!own && (busy || onPermission) && w && row.sessionId) {
     outbox.push(row.sessionId, text);
     return {
       ok: true,
@@ -602,32 +676,32 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
     };
   }
   // Words go to the live process through the courier: no restart, so its window, tab and background agents stay.
-  if (row.pid && !ownMessage(text)) {
-    if (await courier(row.pid, ownerWords([text]), row.cwd)) return { ok: true, how: "sent", note: tr("передал в работающую сессию", "passed on to the running session") };
-    return { ok: false, how: "needs-sendmessage", note: "курьер не достучался до сессии — передать можно сообщением между сессиями" };
+  if (row.pid && !own) {
+    const said = ownerWords([text]);
+    if (!(await courier(row.pid, said, row.cwd))) return { ok: false, how: "needs-sendmessage", note: "курьер не достучался до сессии — передать можно сообщением между сессиями" };
+    await readBy(row, said);
+    return { ok: true, how: "sent", note: tr("передал в работающую сессию", "passed on to the running session") };
   }
-  // The owner's own message (a slash command such as /goal, «принято» that closes a goal): a Terminal tab with the
-  // wrapper resumes the conversation with it as the user's message (`claude --resume <id> "<text>"`)
-  if (row.kind !== "background" && (await wrapVersion(row)) >= 2) {
-    if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) {
-      pendingRestarts.add(row.sessionId!, text);
-      return { ok: true, how: "queued", note: tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step") };
-    }
-    return restartInTab(row, text);
+  // The owner's own message (a slash command such as /goal, «принято» that closes a goal) goes in by resuming the
+  // conversation with it as its user's message: a Terminal session only in its own tab through the wrapper, a busy one
+  // once it has finished its step
+  const tab = row.kind !== "background";
+  if (tab && (await wrapVersion(row)) < 2) return { ok: false, how: "needs-sendmessage", note: "сессия в терминале без обёртки перезапуска — передать можно только сообщением между сессиями" };
+  if (!row.sessionId || (!tab && !row.id)) return { ok: false, how: "failed", note: tr("у сессии нет разговора", "the session has no conversation") };
+  if (busy || onPermission || (!!row.waitingFor && row.waitingFor !== "input needed")) {
+    pendingRestarts.add(row.sessionId, text);
+    return { ok: true, how: "queued", note: tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step") };
   }
-  if (row.kind !== "background" || !row.sessionId || !row.id) return { ok: false, how: "needs-sendmessage", note: "сессия в терминале без обёртки перезапуска — передать можно только сообщением между сессиями" };
-  if (busy || onPermission) return { ok: false, how: "needs-sendmessage", note: "чужая занятая сессия — передать можно только сообщением между сессиями" };
-  return resumeWith(row, text, w);
+  return tab ? restartInTab(row, text) : resumeWith(row, text, w);
 }
 
 // The owner's own message for a stopped session or a slash command: resume the conversation with it.
 async function resumeWith(row: AgentRow, text: string, w: Worker | undefined): Promise<Delivery> {
   if (!row.sessionId || !row.id) return { ok: false, how: "failed", note: tr("у сессии нет разговора", "the session has no conversation") };
-  if (row.pid) {
-    // Not when it is open in a tab through `claude attach`: the owner is watching it there and the tab would show
-    // "Session has exited".
-    if (await attachedInTab(row.id)) return { ok: false, how: "needs-sendmessage", note: "она открыта во вкладке Терминала: перезапуск закрыл бы вкладку — передать можно сообщением между сессиями" };
-    await stopSession(row.id);
+  if (!row.pid) return resumeStopped(row, text, w);
+  const id = row.id;
+  return aroundTabs(row, async (detached) => {
+    await stopSession(id);
     // wait until the process is really gone, or --resume would start a copy
     let gone = false;
     for (let i = 0; i < 30 && !gone; i++) {
@@ -635,7 +709,13 @@ async function resumeWith(row: AgentRow, text: string, w: Worker | undefined): P
       if (!gone) await Bun.sleep(500);
     }
     if (!gone) return { ok: false, how: "failed", note: tr("сессия не остановилась за 15 с — не поднимаю её заново, иначе Claude Code заведёт копию", "the session didn’t stop within 15 s — not resuming it, or Claude Code would start a copy") };
-  }
+    await detached();
+    return resumeStopped(row, text, w);
+  });
+}
+
+async function resumeStopped(row: AgentRow, text: string, w: Worker | undefined): Promise<Delivery> {
+  if (!row.sessionId) return { ok: false, how: "failed", note: tr("у сессии нет разговора", "the session has no conversation") };
   // Process flags (--settings with the gate hooks, Remote Control, model) are not in the transcript: pass them again for
   // our own sessions, or the session would carry on without the gate.
   const flags = w ? ["-n", w.name, "--model", w.model, "--effort", w.effort ?? config.workers.effort, "--settings", WORKER_SETTINGS, "--append-system-prompt", workerPreface(), ...(w.remote !== false ? ["--remote-control", w.name] : [])] : [];
@@ -646,6 +726,18 @@ async function resumeWith(row: AgentRow, text: string, w: Worker | undefined): P
   if (/started a copy/i.test(out) && newId) return dropCopy(newId, out);
   if (w && newId && newId !== w.id) workers.patch(w.sessionId, { id: newId });
   return { ok: true, how: "resumed", note: "сессия продолжила работу с вашим сообщением" };
+}
+
+// An idle session reads a message between sessions at once. Wait for that (up to 10 s), so that what comes next, such as
+// a restart for the owner's own message, can't stop it before it has read this one.
+async function readBy(row: AgentRow, said: string) {
+  if (row.status !== "idle" || !row.sessionId) return;
+  const path = transcriptPath(row.cwd, row.sessionId);
+  if (!existsSync(path)) return; // its conversation isn't on this Mac's disk: nothing to watch
+  for (let i = 0; i < 20; i++) {
+    if (readTail(path, 300_000).some((e) => e.type === "user" && (e.origin as { body?: string } | undefined)?.body === said)) return;
+    await Bun.sleep(500);
+  }
 }
 
 // what must reach the session as the owner's own message: a slash command such as /goal, «принято» that closes a goal

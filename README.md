@@ -76,7 +76,7 @@ bin/arch pair    # prints a one-time link: open it on your phone and tap Start
 Optional, from the same folder:
 
 - `ln -s "$PWD/bin/arch" ~/.local/bin/archi` gives you the `archi` command used below.
-- `echo "source \"$PWD/bin/claude-wrap.zsh\"" >> ~/.zshrc` lets the bot restart a session you started in a terminal, in the same tab.
+- `echo "source \"$PWD/bin/claude-wrap.zsh\"" >> ~/.zshrc` lets the bot restart a session you started in a terminal, in the same tab, and keeps a `claude attach` tab attached when it restarts a background session.
 - `gh auth login`, then `/setup` in the chat, lets the bot follow your GitHub runs and pull requests.
 - Turn on Threaded Mode for your bot in @BotFather to give each session its own topic.
 - Deploy screenshots need a site linked to its repository: in `sites` in `config.local.json`, for example `{ "name": "Landing", "url": "https://example.com/", "repo": "landing" }`, then `bin/arch restart`.
