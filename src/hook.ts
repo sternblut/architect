@@ -4,6 +4,7 @@
 import { ARCH_HOME, config } from "./config";
 import { readHookSecret } from "./secret";
 import { classifyTool, gitBranchSync } from "./policy";
+import { stopsNow } from "./procs";
 
 type HookInput = { session_id: string; cwd: string; tool_name: string; tool_input: Record<string, unknown>; hook_event_name: string };
 type HostReply = { additionalContext?: string; answers?: Record<string, string> };
@@ -60,6 +61,7 @@ const verdict = classifyTool(input.tool_name, input.tool_input ?? {}, {
   keychainService: config.keychainService,
   branch: gitBranchSync,
   ask: config.ask,
+  stops: stopsNow,
 });
 const out = (o: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...o } });
 
