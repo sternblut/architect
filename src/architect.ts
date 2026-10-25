@@ -7,9 +7,9 @@ import type { Approvals, Decision, Question } from "./approvals";
 import { ARCH_HOME, DATA, STATE, WORK, config, projectDir, tr } from "./config";
 import { USAGE_URL } from "./limits";
 import { classifyTool, gitBranchSync, parseShell, stripPrefixes, type Verdict } from "./policy";
-import { findSession, listAgents, toolBrief } from "./sessions";
+import { listAgents, toolBrief } from "./sessions";
 import { fits } from "./fast";
-import { displayName } from "./ui";
+import { findSession, sessionLabel } from "./ui";
 import type { Incoming, Telegram } from "./telegram";
 import { limitReset, untilTime } from "./status";
 import { clip, hhmm, log, readJson, sleep, writeJson } from "./util";
@@ -386,7 +386,7 @@ export class Architect {
       const sess = async () => {
         const k = String(input.session ?? "");
         const r = await findSession(k).catch(() => undefined);
-        const name = r?.sessionId ? displayName(r.sessionId, r.cwd, await listAgents(true).catch(() => [])) : k;
+        const name = r?.sessionId ? sessionLabel(r.sessionId, r.cwd, await listAgents(true).catch(() => [])) : k;
         return tr(`«${name}»`, `“${name}”`);
       };
       const s = ["mcp__arch__set_goal", "mcp__arch__clear_goal", "mcp__arch__stop_session"].includes(tool) ? await sess() : "";
@@ -453,7 +453,7 @@ export class Architect {
         const ti = (input.tool_input ?? {}) as Record<string, unknown>;
         const rows = await listAgents(true).catch(() => []);
         const r = ti.session ? await findSession(String(ti.session)).catch(() => undefined) : undefined;
-        const name = r?.sessionId ? displayName(r.sessionId, r.cwd, rows) : undefined;
+        const name = r?.sessionId ? sessionLabel(r.sessionId, r.cwd, rows) : undefined;
         if (saidByOwner(input.tool_name, ti, this.d.tg.ownerSaid.map((x) => x.text), name)) {
           log("architect", `по слову владельца, без кнопки: ${input.tool_name}${name ? ` (${name})` : ""}`);
           return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } };

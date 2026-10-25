@@ -7,7 +7,7 @@ import { collect } from "./status";
 import { weekWarning } from "./limits";
 import { wakeAfterLimit } from "./limitwake";
 import { freshLinks, type Link, markTold } from "./links";
-import { displayName } from "./ui";
+import { sessionLabel } from "./ui";
 import { deliverQueued, listAgents, pendingRestarts, sessionDigest, workers, type AgentRow } from "./sessions";
 import type { Telegram } from "./telegram";
 import type { Board } from "./board";
@@ -112,7 +112,7 @@ export class Watcher {
     if (!Object.keys(pendingRestarts.all()).length) return;
     const rows = await listAgents(true);
     for (const { row: r, prompt, res } of await deliverQueued(rows)) {
-      const name = displayName(r.sessionId!, r.cwd, rows);
+      const name = sessionLabel(r.sessionId!, r.cwd, rows);
       const done = prompt
         ? tr(`${name} закончила шаг и получила ваше сообщение.`, `${name} finished its step and got your message.`)
         : tr(`${name} закончила шаг и перезапущена на новой версии, продолжает с того же места.`, `${name} finished its step and restarted on the new version, picking up where it left off.`);
@@ -127,14 +127,14 @@ export class Watcher {
   private async afterLimit(rows: AgentRow[]) {
     const woke = await wakeAfterLimit(rows);
     if (!woke.length) return;
-    const names = woke.map((r) => displayName(r.sessionId!, r.cwd, rows)).join(", ");
+    const names = woke.map((r) => sessionLabel(r.sessionId!, r.cwd, rows)).join(", ");
     await this.d.tg.send(tr(`После сброса лимита Claude продолжили работу: ${names}.`, `After the Claude limit reset, these went back to work: ${names}.`), { silent: true });
   }
 
   private async links() {
     const rows = await listAgents(true);
     for (const f of freshLinks(rows)) {
-      if (this.ticks > 3) await this.d.tg.send(linksMd(displayName(f.sessionId, f.cwd, rows), f.pages), { buttons: linkButtons(f.pages), skipAtNight: true });
+      if (this.ticks > 3) await this.d.tg.send(linksMd(sessionLabel(f.sessionId, f.cwd, rows), f.pages), { buttons: linkButtons(f.pages), skipAtNight: true });
       markTold(f.sessionId);
     }
   }

@@ -6,12 +6,12 @@ import { z } from "zod";
 import type { Approvals } from "./approvals";
 import { ARCH_HOME, HOME, SHOTS, STATE, config, projectDir, tr } from "./config";
 import { collect, render } from "./status";
-import { ARCH_NOTE, type AgentRow, conversation, deliver, sessionDigest as digestFor, findSession, isTrusted, listAgents, ownerWords, pendingRestarts, readTail, restartSession, setGoal, startWorker, stopSession, transcriptPath, trustKey, workers } from "./sessions";
+import { ARCH_NOTE, type AgentRow, conversation, deliver, sessionDigest as digestFor, isTrusted, listAgents, ownerWords, pendingRestarts, readTail, restartSession, setGoal, startWorker, stopSession, transcriptPath, trustKey, workers } from "./sessions";
 import { quotesOwner } from "./architect";
 import { stopHolds } from "./holds";
 import { nextAt, promises } from "./promises";
 import type { Telegram } from "./telegram";
-import { displayName, giveName, type SessionUI } from "./ui";
+import { displayName, findSession, giveName, missingSession, sessionLabel, type SessionUI } from "./ui";
 import { ago, clip, hhmm, log, run, tilde } from "./util";
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
@@ -25,7 +25,7 @@ export async function restartReport(targets: AgentRow[], rows: AgentRow[]): Prom
   const old: string[] = [];
   const failed: string[] = [];
   for (const r of targets) {
-    const name = displayName(r.sessionId!, r.cwd, rows);
+    const name = sessionLabel(r.sessionId!, r.cwd, rows);
     const res = await restartSession(r);
     if (res.ok) done.push(name);
     else if (res.how === "queued") {
@@ -68,7 +68,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
                 const dg = digestFor(r);
                 const w = workers.get(r.sessionId);
                 return [
-                  `• ${displayName(r.sessionId ?? "", r.cwd, rows)} [id ${r.id ?? "—"} · session ${r.sessionId ?? "?"}] ${r.kind === "interactive" ? "терминал" : "фон"}${w ? " · запущена архитектором" : ""}`,
+                  `• ${sessionLabel(r.sessionId ?? "", r.cwd, rows)} [id ${r.id ?? "—"} · session ${r.sessionId ?? "?"}] ${r.kind === "interactive" ? "терминал" : "фон"}${w ? " · запущена архитектором" : ""}`,
                   `  папка: ${tilde(r.cwd)} · состояние: ${r.state ?? "—"}/${r.status ?? "—"}${r.waitingFor ? ` · ждёт: ${r.waitingFor}` : ""} · начата ${ago(r.startedAt)} назад`,
                   dg.goal || dg.title || w?.task ? `  о чём: ${clip(w?.task ?? dg.goal ?? dg.title ?? "", 200)}` : "",
                   dg.lastText ? `  последний ответ: ${clip(dg.lastText.replace(/\s+/g, " "), 300)}` : "",
@@ -88,7 +88,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string(), lines: z.number().int().min(4).max(80).optional(), hours: z.number().min(1).max(72).optional(), find: z.string().min(3).optional() },
         async ({ session, lines, hours, find }) => {
           const r = await findSession(session);
-          if (!r?.sessionId) return fail(`Сессию «${session}» не нашёл. Посмотри список инструментом sessions.`);
+          if (!r?.sessionId) return fail(await missingSession(session));
           // hours and find read much deeper into the transcript
           const deep = hours !== undefined || find !== undefined;
           const since = hours ? Date.now() - hours * 3600_000 : 0;
@@ -106,7 +106,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string(), hours: z.number().min(1).max(168).optional() },
         async ({ session, hours }) => {
           const r = await findSession(session);
-          if (!r) return fail(`Сессию «${session}» не нашёл. Посмотри список инструментом sessions.`);
+          if (!r) return fail(await missingSession(session));
           if (r.cwd === HOME) return fail("Папка сессии — домашняя, обход займёт слишком долго. Смотри конкретную папку через Glob.");
           const h = hours ?? 24;
           const found = await run(["find", r.cwd, "(", "-name", "node_modules", "-o", "-name", ".git", ")", "-prune", "-o", "-type", "f", "-mmin", `-${Math.round(h * 60)}`, "-print"], { timeoutMs: 20_000 });
@@ -199,7 +199,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
             return fail("Это не его слова дословно: в его сообщениях за 30 минут их нет. Его реплику передай в words как есть (можно кусками через «…»), своё — в note.");
           }
           const r = await findSession(session);
-          if (!r) return fail(`Сессию «${session}» не нашёл.`);
+          if (!r) return fail(await missingSession(session));
           // the owner's words arrive as their own message; a note is signed, so the hook never quotes it as theirs
           const t = n ? `${w ? `${ownerWords([w])}\n\n` : ""}${ARCH_NOTE}${n}` : w!;
           if (r.sessionId && stopHolds.answer(r.sessionId, t)) return text("Передано: сессия ждала ответа и получила его сразу.");
@@ -216,7 +216,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string(), condition: z.string().min(10) },
         async ({ session, condition }) => {
           const r = await findSession(session);
-          if (!r) return fail(`Сессию «${session}» не нашёл.`);
+          if (!r) return fail(await missingSession(session));
           const res = await setGoal(r, condition);
           if (res.how === "queued") return text("Поставлю цель, как только она закончит текущий шаг.");
           return res.ok ? text("Цель поставлена — сессия работает, пока она не достигнута.") : fail(`Не поставил: ${res.note}`);
@@ -230,7 +230,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string() },
         async ({ session }) => {
           const r = await findSession(session);
-          if (!r) return fail(`Сессию «${session}» не нашёл.`);
+          if (!r) return fail(await missingSession(session));
           const res = await setGoal(r, null);
           if (res.how === "queued") return text("Сниму цель, как только она закончит текущий шаг.");
           return res.ok ? text("Цель снята.") : fail(`Не снял: ${res.note}`);
@@ -244,7 +244,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string() },
         async ({ session }) => {
           const r = await findSession(session);
-          if (!r?.id) return fail(`Фоновую сессию «${session}» не нашёл (сессии в терминале останавливаются только там).`);
+          if (!r?.id) return fail(r ? `«${session}» — сессия в терминале: она останавливается только там.` : await missingSession(session));
           return text(await stopSession(r.id));
         },
         { annotations: { destructiveHint: true }, alwaysLoad: true },
@@ -258,7 +258,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
           const rows = await listAgents(true);
           const all = /^\s*вс[её]\s*$/i.test(session);
           const one = all ? undefined : await findSession(session);
-          if (!all && !one) return fail(`Сессию «${session}» не нашёл.`);
+          if (!all && !one) return fail(await missingSession(session));
           return text(await restartReport(all ? rows.filter((r) => r.sessionId && r.pid) : [one!], rows));
         },
         { alwaysLoad: true },
@@ -293,8 +293,8 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         async ({ what, session, at }) => {
           if (!session && !at) return fail("Нужен повод: session или at.");
           const r = session ? await findSession(session) : undefined;
-          if (session && !r?.sessionId) return fail(`Сессию «${session}» не нашёл.`);
-          const name = r ? displayName(r.sessionId!, r.cwd, await listAgents(true)) : undefined;
+          if (session && !r?.sessionId) return fail(await missingSession(session));
+          const name = r ? sessionLabel(r.sessionId!, r.cwd, await listAgents(true)) : undefined;
           const p = promises.add({ what: what.trim(), due: at ? nextAt(at) : Date.now() + 3 * 3600_000, session: r?.sessionId, name });
           const by = hhmm(new Date(p.due));
           if (!r) return text(`Записал: напомню тебе в ${by}.`);
@@ -310,8 +310,8 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string(), name: z.string().min(2).max(30) },
         async ({ session, name }) => {
           const r = await findSession(session);
-          if (!r?.sessionId) return fail(`Сессию «${session}» не нашёл.`);
-          const was = displayName(r.sessionId, r.cwd, await listAgents(true));
+          if (!r?.sessionId) return fail(await missingSession(session));
+          const was = sessionLabel(r.sessionId, r.cwd, await listAgents(true));
           giveName(r.sessionId, name.trim());
           return text(`Теперь «${name.trim()}» (было «${was}»).`);
         },
@@ -324,7 +324,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
         { session: z.string() },
         async ({ session }) => {
           const r = await findSession(session);
-          if (!r?.sessionId) return fail(`Сессию «${session}» не нашёл.`);
+          if (!r?.sessionId) return fail(await missingSession(session));
           await d.ui.adopt(r.sessionId, r.cwd);
           // only the architect's own sessions get a card, so don't promise one for any other
           return text(workers.get(r.sessionId) ? `Карточка «${r.name ?? r.id}» заведена.` : `Карточки в чате у этой сессии не будет: она запущена в терминале. Её состояние владелец видит в «Пульте».`);

@@ -1,7 +1,7 @@
 // The report once the connection is back: how long the Mac was cut off, which sessions were stuck, which won't resume.
 import { tr } from "./config";
 import { listAgents, readTail, transcriptPath } from "./sessions";
-import { displayName } from "./ui";
+import { sessionLabel } from "./ui";
 
 const NB = String.fromCharCode(0xa0);
 // Mac local time with the seconds dropped, as Telegram shows it: rounding would put a 22:05 report "until 22:06"
@@ -20,7 +20,7 @@ export async function outageReport(from: number, to: number, why: "dns" | "teleg
       return t >= from && t <= to && FAILED.test(JSON.stringify(e.message?.content ?? (e as { content?: unknown }).content ?? ""));
     });
     if (!during.length) continue;
-    const name = displayName(r.sessionId, r.cwd, rows);
+    const name = sessionLabel(r.sessionId, r.cwd, rows);
     stood.push(name);
     // a goal that gave up ("Goal paused after 3 automatic retries · send a message to continue") won't resume by itself
     const last = entries.filter((e) => e.type === "assistant" || e.type === "system").at(-1);

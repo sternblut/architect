@@ -4,7 +4,7 @@
 import { tr } from "./config";
 import { fits } from "./fast";
 import { listAgents, wrapVersion } from "./sessions";
-import { displayName } from "./ui";
+import { sessionLabel } from "./ui";
 
 // --dry: only say what would happen, the safe way to try it on real sessions
 const dry = process.argv.includes("--dry");
@@ -12,7 +12,7 @@ const want = process.argv.slice(2).filter((a) => a !== "--dry").join(" ").trim()
 // Background sessions too: one can be open in a tab through attach
 const rows = (await listAgents(true)).filter((r) => r.sessionId && r.pid);
 const words = want.toLowerCase().split(/[^\p{L}\p{N}*]+/u).filter(Boolean);
-const name = (r: (typeof rows)[number]) => displayName(r.sessionId!, r.cwd, rows);
+const name = (r: (typeof rows)[number]) => sessionLabel(r.sessionId!, r.cwd, rows);
 const hit = rows.filter((r) => words.length && words.every((w) => fits(w, name(r))));
 const say = (t: string) => {
   console.log(t);

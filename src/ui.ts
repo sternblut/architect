@@ -83,6 +83,62 @@ export function displayName(sessionId: string, cwd: string, rows: AgentRow[] = [
   return named(sessionId, cwd, rows, d);
 }
 
+// The name the owner sees everywhere: on the dashboard, cards, messages and in what the architect is told. Live
+// sessions with the same name are told apart by when they started: the day, or the time if on the same day. Copies of
+// one conversation start at the same minute, so they are numbered on top.
+export function sessionLabel(sessionId: string, cwd: string, rows: AgentRow[]): string {
+  const base = displayName(sessionId, cwd, rows);
+  const same = rows.filter((r) => r.sessionId && (r.pid || r.state === "working" || r.state === "blocked") && displayName(r.sessionId, r.cwd, rows) === base);
+  const me = same.find((r) => r.sessionId === sessionId);
+  if (same.length < 2 || !me) return base;
+  const local = (t: number) => new Date(t - new Date(t).getTimezoneOffset() * 60_000).toISOString();
+  const day = (t: number) => tr(local(t).slice(5, 10).split("-").reverse().join("."), new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" }).replace(" ", "\u00a0"));
+  const when = (r: AgentRow) => (r.startedAt ? (same.every((x) => x === r || day(x.startedAt ?? 0) !== day(r.startedAt!)) ? day(r.startedAt) : hhmm(new Date(r.startedAt))) : "");
+  const twins = same.filter((r) => when(r) === when(me)).sort((a, b) => a.sessionId!.localeCompare(b.sessionId!));
+  const n = twins.indexOf(me);
+  const nth = twins.length > 1 ? tr(["первая", "вторая", "третья", "четвёртая", "пятая"][n] ?? `№${n + 1}`, `#${n + 1}`) : "";
+  return `${base} (${[when(me) && `${tr("с", "since")} ${when(me)}`, nth].filter(Boolean).join(", ")})`;
+}
+
+// A session by what the owner or the architect calls it: its id, the label the owner sees, or its name. A name that
+// fits several is never guessed: then nothing is found and missingSession says which ones.
+export async function findSession(key: string): Promise<AgentRow | undefined> {
+  return (await lookup(key)).row;
+}
+
+export async function missingSession(key: string): Promise<string> {
+  const { several } = await lookup(key);
+  return several
+    ? tr(`Под «${key}» подходит несколько: ${several.join("; ")}. Не угадываю — уточни у владельца, какая.`, `Several sessions fit «${key}»: ${several.join("; ")}. Not guessing — ask the owner which one.`)
+    : tr(`Сессию «${key}» не нашёл. Посмотри список инструментом sessions.`, `No session «${key}». See the list with the sessions tool.`);
+}
+
+async function lookup(key: string): Promise<{ row?: AgentRow; several?: string[] }> {
+  const rows = (await listAgents(true)).filter((r) => r.sessionId);
+  const k = key.trim().toLowerCase();
+  const id = rows.find((r) => r.id === k || r.sessionId === k || (/^[0-9a-f-]{6,}$/.test(k) && r.sessionId!.startsWith(k)));
+  if (id) return { row: id };
+  // the owner's names are worked out for live sessions and the architect's own; stopped ones go by Claude Code's name
+  const known = rows.filter((r) => r.pid || r.state === "working" || r.state === "blocked" || workers.get(r.sessionId));
+  const label = (r: AgentRow) => sessionLabel(r.sessionId!, r.cwd, rows).toLowerCase();
+  const name = (r: AgentRow) => displayName(r.sessionId!, r.cwd, rows).toLowerCase();
+  const claude = (r: AgentRow) => (r.name ?? "").toLowerCase();
+  const one = (list: AgentRow[]) => {
+    if (list.length === 1) return { row: list[0] };
+    const live = list.filter((r) => r.pid);
+    if (live.length === 1) return { row: live[0] };
+    if (list.length) return { several: (live.length ? live : list).map((r) => `${sessionLabel(r.sessionId!, r.cwd, rows)} [id ${r.id ?? r.sessionId!.slice(0, 8)}]`) };
+  };
+  return (
+    one(known.filter((r) => label(r) === k)) ??
+    one(known.filter((r) => name(r) === k || claude(r) === k)) ??
+    one(rows.filter((r) => claude(r) === k)) ??
+    one(known.filter((r) => name(r).includes(k) || claude(r).includes(k))) ??
+    one(rows.filter((r) => claude(r).includes(k))) ??
+    {}
+  );
+}
+
 function named(sessionId: string, cwd: string, rows: AgentRow[], d: ReturnType<typeof sessionDigest>): string {
   const site = d.goal ? SITES.find((s) => s.re.test(d.goal!)) : undefined;
   if (site) return keep(sessionId, site.name);
@@ -227,7 +283,7 @@ export class SessionUI {
 
   // The name the owner sees, without quotes or folder
   nameOf(sessionId: string, cwd: string) {
-    return displayName(sessionId, cwd, [...this.rows.values()]);
+    return sessionLabel(sessionId, cwd, [...this.rows.values()]);
   }
 
   // The name in quotes, for use inside a sentence
