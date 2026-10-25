@@ -49,7 +49,7 @@ test("the owner's words go verbatim, in pieces joined by …; a paraphrase doesn
 });
 
 test("the architect's note to a session is never quoted as the owner's", async () => {
-  const { ARCH_NOTE, ownerWords } = await import("../src/hookserver");
+  const { ARCH_NOTE, ownerWords } = await import("../src/sessions");
   const note = `${ownerWords(["пусть выкладывают сразу"])}\n\n${ARCH_NOTE}он про ночную выкладку`;
   expect(ownerWords([note])).toBe(note);
   expect(ownerWords(["да", note])).toBe(`Сообщение владельца из Telegram: «да»\n\n${note}`);

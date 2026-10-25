@@ -21,7 +21,8 @@ import { promises, type Promised } from "./promises";
 import { recentEnd } from "./limits";
 import { morningMd } from "./morning";
 import { outageReport } from "./outage";
-import { actionsSince, deliver, listAgents, outbox, readTail, setClaudeBin, transcriptPath, workers, writeWorkerSettings } from "./sessions";
+import { actionsSince, deliver, listAgents, outbox, readTail, setClaudeBin, setCourier, transcriptPath, workers, writeWorkerSettings } from "./sessions";
+import { makeCourier } from "./courier";
 import { Telegram, type Incoming } from "./telegram";
 import { makeTools } from "./tools";
 import { SessionUI, displayName } from "./ui";
@@ -65,6 +66,7 @@ if (!process.env.ARCH_STATE_DIR)
 
 const claudePath = Bun.which("claude") ?? join(process.env.HOME ?? "", ".local", "bin", "claude");
 setClaudeBin(claudePath);
+setCourier(makeCourier({ claudePath }));
 const bunPath = process.execPath;
 setBunPath(bunPath);
 

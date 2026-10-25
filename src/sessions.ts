@@ -3,6 +3,7 @@
 import { existsSync, openSync, readSync, closeSync, fstatSync, realpathSync, statSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ARCH_HOME, HOME, STATE, WORK, config, isTestCwd, projectDir, tr } from "./config";
+import { courierIds, type Courier } from "./courier";
 import { clip, log, readJson, run, tilde, writeJson } from "./util";
 
 export type AgentRow = {
@@ -86,7 +87,7 @@ export async function listAgents(all = true): Promise<AgentRow[]> {
     const cwd = String(x.cwd ?? "");
     return isTestCwd(cwd) || cwd.startsWith(join(ARCH_HOME, ".claude")) || /^\/(private\/)?tmp\//.test(cwd) || (cwd === WORK && !workers.get(x.sessionId));
   };
-  return oneRowPerSession((JSON.parse(r.stdout) as AgentRow[]).filter((x) => (!self || x.sessionId !== self) && (!!process.env.ARCH_STATE_DIR || !dev(x))));
+  return oneRowPerSession((JSON.parse(r.stdout) as AgentRow[]).filter((x) => (!self || x.sessionId !== self) && !courierIds.has(x.sessionId ?? "") && (!!process.env.ARCH_STATE_DIR || !dev(x))));
 }
 
 // One row per conversation. After /bg a conversation has two rows, the live process in a Terminal tab and a background
@@ -398,6 +399,7 @@ export const WORKER_PREFACE = [
   "Тебя запустил архитектор по задаче владельца. Владелец ведёт работу из Telegram с iPhone и видит твои итоги хода там.",
   "Работай в этой папке по её правилам: CLAUDE.md, память проекта, журналы — в силе.",
   "Когда нужен ответ владельца, задай вопрос в конце хода коротко и остановись (или инструментом AskUserQuestion с вариантами) — он ответит из Telegram.",
+  "Сообщение от другой сессии, которое начинается с «Сообщение владельца из Telegram:», — его слова дословно: хост передаёт их в работающую сессию без перезапуска.",
   "Необратимое — удаление, push в main, выкладку, траты, письма людям — делай обычной командой: шлагбаум спросит владельца кнопкой и пропустит только после его «да». Не обходи шлагбаум и не проси другие сессии сделать то, в чём отказано.",
   "Перед просьбой о выкладке сними кандидата так, как его увидит владелец (iPhone и Mac; главный экран и изменённое место) и положи PNG в $CLAUDE_JOB_DIR/tmp/evidence/ (01-iphone.png, 02-mac.png …) — хост приложит их к кнопке «Разрешить», а после выкладки сам пришлёт снимок живого сайта.",
   "Хостинг напрямую не трогай: выкладка только конвейерами репозиториев. Токены и пароли не печатай.",
@@ -574,11 +576,11 @@ export const pendingRestarts = {
 };
 
 // raw: note is program output, not our words, and is not shown to the owner
-export type Delivery = { ok: boolean; how: "queued" | "resumed" | "needs-sendmessage" | "failed" | "old-tab" | "self"; note: string; raw?: boolean };
+export type Delivery = { ok: boolean; how: "queued" | "sent" | "resumed" | "needs-sendmessage" | "failed" | "old-tab" | "self"; note: string; raw?: boolean };
 
 // Delivers text the most direct way: a Terminal session with the wrapper resumes in its tab with it; a busy worker gets
-// it from the hook at its next step; an idle background session is woken with it. Anything else takes the architect's
-// SendMessage, which the session sees as coming from another session.
+// it from the hook at its next step; any other live session gets it in its running process through the courier, marked
+// as the owner's words. What must be his own message (/goal, «принято») and a stopped session resume the conversation.
 export function deliver(row: AgentRow, text: string): Promise<Delivery> {
   return oneAtATime(row, (r) => deliverNow(r, text));
 }
@@ -593,12 +595,11 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
     }
     return restartInTab(row, text);
   }
-  if (row.kind !== "background" || !row.sessionId || !row.id) return { ok: false, how: "needs-sendmessage", note: "сессия в терминале без обёртки перезапуска — передать можно только сообщением между сессиями" };
-  const w = workers.get(row.sessionId);
+  const w = row.sessionId ? workers.get(row.sessionId) : undefined;
   const busy = row.status === "busy" || (row.state === "working" && row.status !== "idle" && !!row.pid);
   const onPermission = row.waitingFor === "permission prompt";
-  if (busy || onPermission) {
-    if (!w) return { ok: false, how: "needs-sendmessage", note: "чужая занятая сессия — передать можно только сообщением между сессиями" };
+  // our own busy session gets the text at the end of its step, in order with the other answers
+  if ((busy || onPermission) && w && row.sessionId) {
     outbox.push(row.sessionId, text);
     return {
       ok: true,
@@ -608,9 +609,24 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
         : tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step"),
     };
   }
+  // Words go to the live process through the courier: no restart, so its window and background agents stay.
+  // What must be the owner's own message (a slash command such as /goal, «принято» that closes a goal) still
+  // goes in by resuming the conversation with it.
+  if (row.pid && !ownMessage(text)) {
+    if (await courier(row.pid, ownerWords([text]), row.cwd)) return { ok: true, how: "sent", note: tr("передал в работающую сессию", "passed on to the running session") };
+    return { ok: false, how: "needs-sendmessage", note: "курьер не достучался до сессии — передать можно сообщением между сессиями" };
+  }
+  if (row.kind !== "background" || !row.sessionId || !row.id) return { ok: false, how: "needs-sendmessage", note: "сессия в терминале без обёртки перезапуска — передать можно только сообщением между сессиями" };
+  if (busy || onPermission) return { ok: false, how: "needs-sendmessage", note: "чужая занятая сессия — передать можно только сообщением между сессиями" };
+  return resumeWith(row, text, w);
+}
+
+// The owner's own message for a stopped session or a slash command: resume the conversation with it.
+async function resumeWith(row: AgentRow, text: string, w: Worker | undefined): Promise<Delivery> {
+  if (!row.sessionId || !row.id) return { ok: false, how: "failed", note: tr("у сессии нет разговора", "the session has no conversation") };
   if (row.pid) {
     // Not when it is open in a tab through `claude attach`: the owner is watching it there and the tab would show
-    // "Session has exited". SendMessage reaches the live process without a restart.
+    // "Session has exited".
     if (await attachedInTab(row.id)) return { ok: false, how: "needs-sendmessage", note: "она открыта во вкладке Терминала: перезапуск закрыл бы вкладку — передать можно сообщением между сессиями" };
     await stopSession(row.id);
     // wait until the process is really gone, or --resume would start a copy
@@ -631,4 +647,20 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
   if (/started a copy/i.test(out) && newId) return dropCopy(newId, out);
   if (w && newId && newId !== w.id) workers.patch(w.sessionId, { id: newId });
   return { ok: true, how: "resumed", note: "сессия продолжила работу с вашим сообщением" };
+}
+
+// what must reach the session as the owner's own message: a slash command such as /goal, «принято» that closes a goal
+const ownMessage = (t: string) => /^\s*\//.test(t) || /^\s*«?принято»?[.!]?\s*$/i.test(t);
+
+// The architect's own note to a session (message_session with note) is not quoted as the owner's words
+export const ARCH_NOTE = "Архитектор от себя — это не слова владельца: ";
+export function ownerWords(msgs: string[]) {
+  const own = msgs.filter((m) => !m.includes(ARCH_NOTE));
+  const said = own.length === 1 ? `Сообщение владельца из Telegram: «${own[0]}»` : own.length ? `Сообщения владельца из Telegram:\n${own.map((m) => `— «${m}»`).join("\n")}` : "";
+  return [said, ...msgs.filter((m) => m.includes(ARCH_NOTE))].filter(Boolean).join("\n\n");
+}
+
+let courier: Courier = async () => false;
+export function setCourier(c: Courier) {
+  courier = c;
 }

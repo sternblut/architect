@@ -57,12 +57,18 @@ for (const id of s.attached) console.log("ttys016  /Users/x/.local/bin/claude at
   { mode: 0o755 },
 );
 
-const { deliver, setClaudeBin, setPsBin } = await import("../src/sessions");
+const { ARCH_NOTE, deliver, setClaudeBin, setCourier, setPsBin } = await import("../src/sessions");
 setClaudeBin(join(dir, "claude"));
 setPsBin(join(dir, "ps"));
 
 const fake = (): Fake => JSON.parse(readFileSync(FAKE, "utf8"));
 const row = (): Row => fake().sessions[0];
+let sent: [number, string][] = [];
+let reaches = true;
+setCourier(async (pid, text) => {
+  sent.push([pid, text]);
+  return reaches;
+});
 
 beforeEach(() => {
   const s: Fake = {
@@ -73,49 +79,81 @@ beforeEach(() => {
     calls: [],
   };
   writeFileSync(FAKE, JSON.stringify(s));
+  sent = [];
+  reaches = true;
 });
 
 const set = (patch: Partial<Fake>) => writeFileSync(FAKE, JSON.stringify({ ...fake(), ...patch }));
+const words = (t: string) => `Сообщение владельца из Telegram: «${t}»`;
 
-describe("a message to an idle background session", () => {
-  test("wakes the same conversation: stop, then resume with the text, no copy", async () => {
+describe("words to a live session go through the courier, never by restarting it", () => {
+  test("an idle background session gets them in its live process: no stop, no resume, no copy", async () => {
     const res = await deliver(row(), "Посмотри итоги недели");
-    expect(res.ok).toBe(true);
-    expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 Посмотри итоги недели"]);
+    expect(res).toMatchObject({ ok: true, how: "sent" });
+    expect(sent).toEqual([[7000, words("Посмотри итоги недели")]]);
+    expect(fake().calls).toEqual([]);
     expect(fake().sessions.length).toBe(1);
   });
 
-  test("leaves a session open through attach alone: the tab stays, the message needs SendMessage", async () => {
+  test("the same for a session open in a window through attach: the window stays", async () => {
     set({ attached: ["a1b2c3d4"] });
-    const res = await deliver(row(), "Посмотри итоги недели");
-    expect(res).toMatchObject({ ok: false, how: "needs-sendmessage" });
+    expect((await deliver(row(), "Посмотри итоги недели")).ok).toBe(true);
     expect(fake().calls).toEqual([]);
+  });
+
+  test("the architect's own note goes as it is, not as the owner's words", async () => {
+    const note = `${ARCH_NOTE}он про ночную выкладку`;
+    await deliver(row(), note);
+    expect(sent).toEqual([[7000, note]]);
+  });
+
+  test("the courier can't reach it: nothing restarts, the architect passes the words on", async () => {
+    reaches = false;
+    expect(await deliver(row(), "Посмотри итоги недели")).toMatchObject({ ok: false, how: "needs-sendmessage" });
+    expect(fake().calls).toEqual([]);
+  });
+
+  test("two messages in a row go one at a time, both through the courier", async () => {
+    const idle = row();
+    const [a, b] = await Promise.all([deliver(idle, "голосовое"), deliver(idle, "и пересланные")]);
+    expect([a.ok, b.ok]).toEqual([true, true]);
+    expect(sent.map(([, t]) => t)).toEqual([words("голосовое"), words("и пересланные")]);
+    expect(fake().calls).toEqual([]);
+  });
+});
+
+describe("the owner's own message (принято, /goal) resumes the conversation with it", () => {
+  test("«принято» that closes a goal goes in as his own reply", async () => {
+    expect((await deliver(row(), "принято")).ok).toBe(true);
+    expect(sent).toEqual([]);
+    expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 принято"]);
+  });
+
+  test("a slash command such as /goal too", async () => {
+    await deliver(row(), "/goal довести фичу");
+    expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 /goal довести фичу"]);
+  });
+
+  test("a stopped session (no process) resumes with plain words", async () => {
+    set({ sessions: [{ ...row(), pid: undefined, state: "stopped" }] });
+    expect((await deliver(row(), "Посмотри итоги недели")).ok).toBe(true);
+    expect(sent).toEqual([]);
+    expect(fake().calls).toEqual(["resume a1b2c3d4 Посмотри итоги недели"]);
   });
 
   test("doesn't resume a session that didn't stop, which would start a copy", async () => {
     set({ stuck: ["a1b2c3d4"] });
-    const res = await deliver(row(), "Посмотри итоги недели");
-    expect(res.ok).toBe(false);
+    expect((await deliver(row(), "принято")).ok).toBe(false);
     expect(fake().calls).toEqual(["stop a1b2c3d4"]);
     expect(fake().sessions.length).toBe(1);
   }, 30_000);
 
   test("stops a copy Claude Code started anyway and reports the message as not delivered", async () => {
     set({ copy: true });
-    const res = await deliver(row(), "Посмотри итоги недели");
-    expect(res.ok).toBe(false);
+    expect((await deliver(row(), "принято")).ok).toBe(false);
     const s = fake();
     const copy = s.sessions[1];
-    expect(s.calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 Посмотри итоги недели", `stop ${copy.id}`]);
+    expect(s.calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 принято", `stop ${copy.id}`]);
     expect(copy.pid).toBeUndefined();
-  });
-
-  test("two messages in a row go one at a time: the second sees the session working and doesn't restart it", async () => {
-    const idle = row();
-    const [a, b] = await Promise.all([deliver(idle, "голосовое"), deliver(idle, "/goal довести фичу")]);
-    expect(a.ok).toBe(true);
-    expect(b).toMatchObject({ ok: false, how: "needs-sendmessage" });
-    expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 голосовое"]);
-    expect(fake().sessions.length).toBe(1);
   });
 });

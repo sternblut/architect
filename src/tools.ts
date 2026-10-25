@@ -6,10 +6,9 @@ import { z } from "zod";
 import type { Approvals } from "./approvals";
 import { ARCH_HOME, HOME, SHOTS, STATE, config, projectDir, tr } from "./config";
 import { collect, render } from "./status";
-import { type AgentRow, conversation, deliver, sessionDigest as digestFor, findSession, isTrusted, listAgents, pendingRestarts, readTail, restartSession, setGoal, startWorker, stopSession, transcriptPath, trustKey, workers } from "./sessions";
+import { ARCH_NOTE, type AgentRow, conversation, deliver, sessionDigest as digestFor, findSession, isTrusted, listAgents, ownerWords, pendingRestarts, readTail, restartSession, setGoal, startWorker, stopSession, transcriptPath, trustKey, workers } from "./sessions";
 import { quotesOwner } from "./architect";
 import { stopHolds } from "./holds";
-import { ARCH_NOTE, ownerWords } from "./hookserver";
 import { nextAt, promises } from "./promises";
 import type { Telegram } from "./telegram";
 import { displayName, giveName, type SessionUI } from "./ui";
@@ -189,7 +188,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
 
       tool(
         "message_session",
-        "Передать сессии слово владельца. words — его слова дословно, целиком или кусками через «…»: хост сверит их с его сообщениями за 30 минут и ответами на твои вопросы, сессия получит их его репликой. note — твоё от себя (контекст, ответ за него по его правилам): сессия увидит, что это от тебя, а не от него. Фоновой — сразу, пробуждением; сессии из Терминала с обёрткой перезапуска — в её же вкладке. Занятая получит, когда закончит ход. Для сессии из Терминала без обёртки вернёт подсказку использовать SendMessage.",
+        "Передать сессии слово владельца. words — его слова дословно, целиком или кусками через «…»: хост сверит их с его сообщениями за 30 минут и ответами на твои вопросы. note — твоё от себя (контекст, ответ за него по его правилам): сессия увидит, что это от тебя, а не от него. Работающая сессия получает сразу, в свой же процесс, без перезапуска — как его слова из Telegram; сессия из Терминала с обёрткой перезапуска — его репликой в своей вкладке; твоя занятая сессия — когда закончит ход. «принято» и /команды уходят его собственной репликой — передавай их отдельно, без note: фоновой и сессии с обёрткой можно, сессии из Терминала без обёртки — нет.",
         { session: z.string(), words: z.string().optional(), note: z.string().optional() },
         async ({ session, words, note }) => {
           const w = words?.trim(), n = note?.trim();
