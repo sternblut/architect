@@ -627,8 +627,9 @@ export class Architect {
           // the owner tapped a button and already sees "Picked … at 17:05"
         } else if (answer) {
           const { text, steps } = splitSteps(answer);
+          const id = steps.length ? this.rememberSteps(steps) : "";
           // one button per row, since two side by side get cut on an iPhone; a bare "Passed on." is silent
-          await this.d.tg.send(text, { replyTo, from: "architect", silent: answer === PASSED() || undefined, buttons: steps.length ? steps.map((s, k) => [{ text: s, data: `sg:${this.rememberSteps(steps)}:${k}` }]) : undefined });
+          await this.d.tg.send(text, { replyTo, from: "architect", silent: answer === PASSED() || undefined, buttons: steps.length ? steps.map((s, k) => [{ text: s, data: `sg:${id}:${k}` }]) : undefined });
           // a promise without a follow_up: remind the architect, at most every 10 minutes so the reminder can't loop
           if (!this.followed && PROMISE().test(text) && Date.now() - this.nudgedAt > 10 * 60_000) {
             this.nudgedAt = Date.now();
