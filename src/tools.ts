@@ -4,7 +4,7 @@ import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "n
 import { basename, join } from "node:path";
 import { z } from "zod";
 import type { Approvals } from "./approvals";
-import { ARCH_HOME, HOME, SHOTS, STATE, config, projectDir, tr } from "./config";
+import { ARCH_HOME, ARCHITECT, HOME, SHOTS, STATE, config, projectDir, tr } from "./config";
 import { collect, render } from "./status";
 import { ARCH_NOTE, type AgentRow, conversation, deliver, sessionDigest as digestFor, isTrusted, listAgents, ownerWords, pendingRestarts, readTail, restartSession, setGoal, startWorker, stopSession, transcriptPath, trustKey, workers } from "./sessions";
 import { quotesOwner } from "./architect";
@@ -167,7 +167,7 @@ export function makeTools(d: { tg: Telegram; approvals: Approvals; ui: SessionUI
             if (String(e).includes("NOT_TRUSTED")) {
               const key = await trustKey(folder);
               const ok = await d.approvals.confirm({
-                source: "Архитектор",
+                source: ARCHITECT,
                 action: tr(`Доверить Claude Code папку ${tilde(key)}`, `Trust Claude Code with folder ${tilde(key)}`),
                 reason: tr(
                   "Claude Code ещё не открывали в этой папке. Доверие — как ответ «Yes» в окне доверия при первом запуске: Claude будет читать её настройки и правила.",

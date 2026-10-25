@@ -4,7 +4,7 @@ import { query, type CanUseTool, type HookCallback, type Query, type SDKMessage,
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { Approvals, Decision, Question } from "./approvals";
-import { ARCH_HOME, DATA, STATE, WORK, config, projectDir, tr } from "./config";
+import { ARCH_HOME, ARCHITECT, DATA, STATE, WORK, config, projectDir, tr } from "./config";
 import { USAGE_URL } from "./limits";
 import { classifyTool, gitBranchSync, parseShell, stripPrefixes, type Verdict } from "./policy";
 import { listAgents, toolBrief } from "./sessions";
@@ -361,7 +361,7 @@ export class Architect {
         // a question asked on behalf of an owner's session goes under its name (one dashboard line, one answer)
         const on = this.relayFor && Date.now() - this.relayFor.at < 30 * 60_000 ? this.relayFor : undefined;
         this.relayFor = undefined; // one session question, one question to the owner
-        const answered = this.d.approvals.ask({ source: on?.label ?? "Архитектор", questions: (input.questions ?? []) as Question[], timeoutMs: 6 * 3600_000, signal: ac.signal });
+        const answered = this.d.approvals.ask({ source: on?.label ?? ARCHITECT, questions: (input.questions ?? []) as Question[], timeoutMs: 6 * 3600_000, signal: ac.signal });
         const wrote = new Promise<"wrote">((res) => (this.asking = () => res("wrote")));
         try {
           const r = await Promise.race([answered, wrote]);
@@ -414,7 +414,7 @@ export class Architect {
       const ac = new AbortController();
       const onStop = () => ac.abort(signal.reason);
       signal.addEventListener("abort", onStop);
-      const decided = this.d.approvals.confirm({ source: "Архитектор", action, reason: decisionReason, tool, input, cwd: WORK, timeoutMs: 30 * 60_000, signal: ac.signal });
+      const decided = this.d.approvals.confirm({ source: ARCHITECT, action, reason: decisionReason, tool, input, cwd: WORK, timeoutMs: 30 * 60_000, signal: ac.signal });
       const wrote = new Promise<"wrote">((res) => (this.asking = () => res("wrote")));
       let r: Decision | "wrote";
       try {

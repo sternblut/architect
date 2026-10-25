@@ -83,6 +83,8 @@ if (process.env.ARCH_LANG) config.lang = process.env.ARCH_LANG === "en" ? "en" :
 // Owner-facing text as a Russian/English pair: tr("Сайт", "Site"). The language is read on every call,
 // so tests switch it with setLang() without reloading modules.
 export const tr = <T>(ru: T, en: T): T => (config.lang === "en" ? en : ru);
+// The architect as the source of a request or question: a key compared in code, shown to the owner as tr("Архитектор", "Architect")
+export const ARCHITECT = "Архитектор";
 export const setLang = (lang: "ru" | "en") => void (config.lang = lang);
 
 export function ensureDirs() {

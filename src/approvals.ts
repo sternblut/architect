@@ -4,7 +4,7 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { decisionBrief, sessionName, type Brief, type More } from "./brief";
-import { ARCH_HOME, LOGS, STATE, tr } from "./config";
+import { ARCH_HOME, ARCHITECT, LOGS, STATE, tr } from "./config";
 import { mdEsc } from "./md";
 import type { Button, Incoming, Telegram } from "./telegram";
 import { clip, hhmm, log, randomId, readJson, scrub, writeJson } from "./util";
@@ -84,7 +84,7 @@ function wordsMd(source: string, action: string, reason?: string) {
   const [first, ...rest] = scrub(action).trim().split("\n");
   const tail = mdEsc(clip(rest.join("\n").trim(), 1500));
   const why = reason ? mdEsc(clip(scrub(reason).replace(/^./, (c) => c.toUpperCase()), 600)) : "";
-  const who = source === "Архитектор" ? "" : tr(`Просит ${sessionName(source)}`, `Requested by ${sessionName(source)}`);
+  const who = source === ARCHITECT ? "" : tr(`Просит ${sessionName(source)}`, `Requested by ${sessionName(source)}`);
   const head = mdEsc(clip(first, 300));
   return [`**${yesVerb(head) ? ask(head) : dot(head)}**`, tail.length <= 300 ? tail : "", why && dot(why), who && dot(who)].filter(Boolean).join("\n\n") + (tail.length > 300 ? more([tail]) : "");
 }
@@ -278,7 +278,7 @@ export class Approvals {
     const about = opts.filter((o) => o.description && o !== rec).map((o) => `${label(o)} — ${mdEsc(low(o.description!))}`);
     const who = sessionName(source);
     const from =
-      source === "Архитектор"
+      source === ARCHITECT
         ? advice
           ? tr(`Советую ${advice}`, `I’d pick ${advice}`)
           : ""

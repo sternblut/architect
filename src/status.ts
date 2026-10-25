@@ -1,6 +1,6 @@
 // "What's going on": sessions, sites, GitHub and the Mac, red flags first.
 import { looping, understood } from "./understand";
-import { config, tr } from "./config";
+import { ARCHITECT, config, tr } from "./config";
 import { listAgents, sessionDigest, type AgentRow } from "./sessions";
 import { mdEsc } from "./md";
 import { clean, sessionLabel } from "./ui";
@@ -290,8 +290,8 @@ export function waitingLines(items: Item[]): string[] {
     else out.push({ names: [i.name], what: i.what, ask: i.ask });
   }
   return out.map((g) => {
-    if (g.names.length === 1 && g.names[0] === "Архитектор") return mdEsc(g.what.charAt(0).toUpperCase() + g.what.slice(1));
-    const names = g.names.map((n) => `**${mdEsc(nobr(n))}**`);
+    if (g.names.length === 1 && g.names[0] === ARCHITECT) return mdEsc(g.what.charAt(0).toUpperCase() + g.what.slice(1));
+    const names = g.names.map((n) => `**${mdEsc(nobr(n === ARCHITECT ? tr("Архитектор", "Architect") : n))}**`);
     const who = names.length > 1 ? `${names.slice(0, -1).join(", ")} ${tr("и", "and")} ${names.at(-1)}` : names[0];
     return `${who} — ${mdEsc(names.length > 1 ? tr(g.what.replace(/^ждёт/, "ждут"), g.what) : g.what)}`; // Russian plural verb
   });

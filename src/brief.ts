@@ -4,7 +4,7 @@
 // so. Plain words on top; files, commands and branches go under "Details".
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { ARCH_HOME, HOME, config, tr, type Site } from "./config";
+import { ARCH_HOME, ARCHITECT, HOME, config, tr, type Site } from "./config";
 import { mdEsc } from "./md";
 import { classifyCommand, classifyTool, gitBranchSync, parseShell, stripPrefixes, type PolicyContext, type Verdict } from "./policy";
 import { stopsNow } from "./procs";
@@ -745,7 +745,7 @@ function mcp(tool: string, input: Record<string, unknown>, v: Verdict): Brief | 
 export async function decisionBrief(o: { tool: string; input: Record<string, unknown>; cwd: string; source: string; shots?: number; worker?: boolean; inTopic?: boolean }): Promise<Brief | undefined> {
   const shots = o.shots ?? 0;
   const v = classifyTool(o.tool, o.input, ctxFor(o.cwd));
-  const who = o.source === "Архитектор" ? tr("архитектор", "the architect") : tr(`сессия ${sessionName(o.source)}`.trim(), sessionName(o.source));
+  const who = o.source === ARCHITECT ? tr("архитектор", "the architect") : tr(`сессия ${sessionName(o.source)}`.trim(), sessionName(o.source));
   let b: Brief | undefined;
   if (o.tool === "Bash") b = await bash(o.input, o.cwd, shots, !!o.worker, who);
   else if (FILE_TOOLS.includes(o.tool)) b = await fileEdit(o.tool, o.input, o.cwd, who);
@@ -755,7 +755,7 @@ export async function decisionBrief(o: { tool: string; input: Record<string, unk
   const said = (s: string) => b!.lines.some((l) => l.includes(s));
   const asks = tr("Просит", "Requested by");
   const why = tr("Почему спрашиваю", "Why I’m asking");
-  if (o.source !== "Архитектор" && !o.inTopic && !said(asks)) b.lines.push(`${asks} ${who}`);
+  if (o.source !== ARCHITECT && !o.inTopic && !said(asks)) b.lines.push(`${asks} ${who}`);
   b.details = [
     ...(b.details ?? []),
     said(asks) ? `${tr("Папка сессии", "Session folder")}: ${mdEsc(tilde(o.cwd))}` : `${asks} ${who}, ${tr("папка", "folder")} ${mdEsc(tilde(o.cwd))}`,
