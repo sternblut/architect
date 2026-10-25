@@ -33,9 +33,10 @@ const BACK_AT_MAC = () => tr("Решите на Mac", "Decide on the Mac"); // s
 // API and limit errors are not questions and not worth a message
 export const API_ERROR = /hit your (weekly |session |5-hour |)limit|usage limit|API Error|overloaded|rate.?limit|Credit balance|Please run \/login|Invalid API key|Prompt is too long/i;
 
+// Whether a session's last words ask the owner something: the one rule for the hook and the watcher
 export const looksLikeQuestion = (t: string) => {
   const tail = t.trim().slice(-400);
-  return /\?\s*(\*\*|_|»|")?\s*$/.test(tail) || /\?\s*\n/.test(tail) || /(жду (вашего|ваш|«|от вас)|скажите|выберите|подтвердите|ответьте|нужн[оа] ваш)/i.test(tail);
+  return /[?？]\s*(\*\*|_|»|")?\s*$/.test(tail) || /[?？]\s*\n/.test(tail) || /(жду (вашего|ваш|«|от вас)|скажите|выберите|подтвердите|ответьте|нужн[оа] ваш)/i.test(tail);
 };
 
 // A /goal or another Stop hook keeps the session going, so it can't be held; the answer is delivered at the next stop
