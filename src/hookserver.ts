@@ -166,11 +166,13 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
   // The owner away from the Mac: a session doesn't wait on his card, so its work doesn't stand still. It is told he
   // decides and goes on with the rest; his answer reaches it later as a message, and after a yes exactly this action
   // passes once without asking. A push or deploy still waits for him: the host follows its pipeline from his yes.
-  const granted = new Map<string, number>(); // "<session> <action>" → until when
+  const granted = new Map<string, number>(); // "<session> <tool> <full input>" → until when
   const waiting = new Set<string>(); // cards sent and not answered yet
+  // the whole request, not its shortened description: a yes is for exactly what the owner saw
+  const keyOf = (sid: string, body: Record<string, any>) => `${sid}\u0000${body.tool_name}\u0000${JSON.stringify(body.tool_input ?? {})}`;
   async function decideLater(body: Record<string, any>, sid: string, cwd: string) {
     const action = describe(body);
-    const key = `${sid}\u0000${action}`;
+    const key = keyOf(sid, body);
     if (!waiting.has(key)) {
       waiting.add(key);
       void approvals
@@ -195,8 +197,8 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     }
     return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: LATER } } };
   }
-  const allowedOnce = (sid: string, action: string) => {
-    const key = `${sid}\u0000${action}`;
+  const allowedOnce = (sid: string, body: Record<string, any>) => {
+    const key = keyOf(sid, body);
     const ok = (granted.get(key) ?? 0) > Date.now();
     granted.delete(key);
     return ok;
@@ -206,7 +208,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
   // A permission request becomes a decision brief (approvals → brief.ts), with the session's candidate shots for a deploy
   async function onPermission(body: Record<string, any>, sid: string, cwd: string, signal: AbortSignal) {
     const action = describe(body);
-    if (allowedOnce(sid, action)) return permissionReply("yes");
+    if (allowedOnce(sid, body)) return permissionReply("yes");
     if (await later(action)) return decideLater(body, sid, cwd);
     const decision = await approvals.confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: SIX_HOURS - 120_000, signal, threadId: await ui.threadFor(sid, cwd) });
     ui.permissionDecided(sid, cwd, action, decision);
@@ -228,7 +230,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     ui.markHooked(sid);
     if (!ownerId() || !(await ownerAway())) return {}; // not paired, or the owner is at the Mac: the terminal decides
     const action = describe(body);
-    if (allowedOnce(sid, action)) return permissionReply("yes");
+    if (allowedOnce(sid, body)) return permissionReply("yes");
     if (await later(action)) return decideLater(body, sid, cwd);
     const w = watch(reqSignal);
     try {
