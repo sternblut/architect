@@ -77,9 +77,30 @@ describe("permissions of any session", () => {
     expect(asked.length).toBe(0);
   });
 
-  test("owner away: a button in Telegram, Allow → allow", async () => {
-    const r: any = await (await call("/hook/any/permission", { ...base, tool_name: "Bash", tool_input: { command: "rm -rf build-old" } })).json();
+  test("owner away: a card in Telegram, the session goes on at once; after his yes the same action passes once", async () => {
+    const req = { ...base, tool_name: "Bash", tool_input: { command: "rm -rf build-old" } };
+    const r: any = await (await call("/hook/any/permission", req)).json();
     expect(asked).toEqual(["rm -rf build-old"]);
+    expect(r.hookSpecificOutput.decision.behavior).toBe("deny");
+    expect(r.hookSpecificOutput.decision.message).toContain("решает владелец");
+    await Bun.sleep(50); // his yes: the stub answers at once
+    const again: any = await (await call("/hook/any/permission", req)).json();
+    expect(again.hookSpecificOutput.decision.behavior).toBe("allow");
+    expect(asked.length).toBe(1); // no second card
+  });
+
+  test("owner away, he says no: nothing is allowed, and asking again is a new card", async () => {
+    confirmReply = "no";
+    const req = { ...base, session_id: "s1n", tool_name: "Bash", tool_input: { command: "rm -rf cache-old" } };
+    await (await call("/hook/any/permission", req)).json();
+    await Bun.sleep(50);
+    const again: any = await (await call("/hook/any/permission", req)).json();
+    expect(again.hookSpecificOutput.decision.behavior).toBe("deny");
+    expect(asked).toEqual(["rm -rf cache-old", "rm -rf cache-old"]);
+  });
+
+  test("a push still waits for his answer: the host follows its pipeline from his yes", async () => {
+    const r: any = await (await call("/hook/any/permission", { ...base, session_id: "s1p", tool_name: "Bash", tool_input: { command: "git push origin main" } })).json();
     expect(r.hookSpecificOutput.decision.behavior).toBe("allow");
   });
 

@@ -7,7 +7,7 @@ import type { Approvals, Decision, Question } from "./approvals";
 import { config, tr } from "./config";
 import { stopHolds } from "./holds";
 import { onReturn, ownerAway } from "./presence";
-import { listAgents, outbox, ownerWords, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
+import { ARCH_NOTE, deliver, listAgents, outbox, ownerWords, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
 import { candidateShots } from "./shots";
 import { ownerId } from "./telegram";
 import { clip, log } from "./util";
@@ -24,6 +24,9 @@ export type HookUI = {
 };
 
 const SIX_HOURS = 6 * 3600_000;
+const DEPLOY = /git\b.*\bpush\b|gh\s+(pr\s+merge|workflow\s+run|run\s+rerun)/;
+const LATER =
+  "Это решает владелец, а он сейчас не у Mac — карточка у него в Telegram. Не жди и не повторяй это действие: займись остальной работой. Когда он ответит, его решение придёт тебе сообщением; после «да» это можно будет сделать без вопроса.";
 const HOLD_MS = 2 * 3600_000;
 const BACK_AT_MAC = () => tr("Решите на Mac", "Decide on the Mac"); // shown on a request closed because the owner is back
 
@@ -159,9 +162,51 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     return msgs.length ? { additionalContext: ownerWords(msgs), queued: msgs } : {};
   }
 
+  // The owner away from the Mac: a session doesn't wait on his card, so its work doesn't stand still. It is told he
+  // decides and goes on with the rest; his answer reaches it later as a message, and after a yes exactly this action
+  // passes once without asking. A push or deploy still waits for him: the host follows its pipeline from his yes.
+  const granted = new Map<string, number>(); // "<session> <action>" → until when
+  const waiting = new Set<string>(); // cards sent and not answered yet
+  async function decideLater(body: Record<string, any>, sid: string, cwd: string) {
+    const action = describe(body);
+    const key = `${sid}\u0000${action}`;
+    if (!waiting.has(key)) {
+      waiting.add(key);
+      void approvals
+        .confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: 12 * 3600_000, threadId: await ui.threadFor(sid, cwd) })
+        .then(async (d) => {
+          waiting.delete(key); // answered: asking again is a new card
+          ui.permissionDecided(sid, cwd, action, d);
+          if (d === "yes") granted.set(key, Date.now() + 2 * 3600_000);
+          const note =
+            d === "yes"
+              ? `владелец разрешил кнопкой: ${clip(action, 300)}. Если это ещё нужно — сделай: второй раз спрашивать не придётся.`
+              : d === "no"
+                ? `владелец не разрешил: ${clip(action, 300)}. Не повторяй это и не обходи.`
+                : typeof d === "object"
+                  ? d.tell
+                  : "";
+          const row = note ? (await listAgents(true).catch(() => [])).find((r) => r.sessionId === sid) : undefined;
+          if (row) await deliver(row, `${ARCH_NOTE}${note}`);
+        })
+        .catch((e) => log("hooks", "решение владельца не дошло до сессии", String(e)))
+        .finally(() => waiting.delete(key));
+    }
+    return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: LATER } } };
+  }
+  const allowedOnce = (sid: string, action: string) => {
+    const key = `${sid}\u0000${action}`;
+    const ok = (granted.get(key) ?? 0) > Date.now();
+    granted.delete(key);
+    return ok;
+  };
+  const later = async (action: string) => !DEPLOY.test(action) && (await ownerAway());
+
   // A permission request becomes a decision brief (approvals → brief.ts), with the session's candidate shots for a deploy
   async function onPermission(body: Record<string, any>, sid: string, cwd: string, signal: AbortSignal) {
     const action = describe(body);
+    if (allowedOnce(sid, action)) return permissionReply("yes");
+    if (await later(action)) return decideLater(body, sid, cwd);
     const decision = await approvals.confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: SIX_HOURS - 120_000, signal, threadId: await ui.threadFor(sid, cwd) });
     ui.permissionDecided(sid, cwd, action, decision);
     return permissionReply(decision);
@@ -182,6 +227,8 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     ui.markHooked(sid);
     if (!ownerId() || !(await ownerAway())) return {}; // not paired, or the owner is at the Mac: the terminal decides
     const action = describe(body);
+    if (allowedOnce(sid, action)) return permissionReply("yes");
+    if (await later(action)) return decideLater(body, sid, cwd);
     const w = watch(reqSignal);
     try {
       const decision = await approvals.confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: SIX_HOURS - 120_000, signal: w.signal, threadId: await ui.threadFor(sid, cwd) });
