@@ -160,26 +160,28 @@ export function stripMd(md: string): string {
 // Splits long Markdown into Telegram-sized parts, avoiding splits inside code blocks
 export function splitMd(md: string, limit = LIMIT): string[] {
   if (md.length <= limit) return [md];
+  // Splits at line ends, in order, each part within the limit. A code block cut across parts is closed at the end of a
+  // part and reopened with its first line in the next; a line longer than a part is cut into pieces.
   const parts: string[] = [];
+  let fence = ""; // the opening line of the code block we are in
   let cur = "";
-  let inFence = false;
+  const flush = () => {
+    if (cur && cur !== fence) parts.push(fence ? `${cur}\n\`\`\`` : cur);
+    cur = fence;
+  };
   for (const line of md.split("\n")) {
-    const toggles = /^\s*```/.test(line);
-    if (cur.length + line.length + 1 > limit && !inFence && cur) {
-      parts.push(cur);
-      cur = "";
-    }
-    if (line.length > limit) {
-      for (let k = 0; k < line.length; k += limit) parts.push(line.slice(k, k + limit));
-      continue;
-    }
-    cur += (cur ? "\n" : "") + line;
-    if (toggles) inFence = !inFence;
-    if (cur.length > limit * 1.5) {
-      parts.push(cur + (inFence ? "\n```" : ""));
-      cur = inFence ? "```" : "";
-    }
+    // the closing line of a block that may have to be added, also for a line that opens one
+    const room = () => limit - (fence || /^\s*```/.test(line) ? 4 : 0) - (cur ? cur.length + 1 : 0);
+    if (cur && line.length > room()) flush();
+    let rest = line;
+    do {
+      const piece = rest.slice(0, Math.max(1, room()));
+      cur += (cur ? "\n" : "") + piece;
+      rest = rest.slice(piece.length);
+      if (rest) flush();
+    } while (rest);
+    if (/^\s*```/.test(line)) fence = fence ? "" : line.trim();
   }
-  if (cur) parts.push(cur);
+  if (cur && cur !== fence) parts.push(cur);
   return parts;
 }
