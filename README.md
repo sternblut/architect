@@ -71,7 +71,7 @@ bin/arch on      # start the host now and at every login
 bin/arch pair    # prints a one-time link: open it on your phone and tap Start
 ```
 
-`config.json` in the repository is a shared template. The setup in the chat writes your folders, sites and GitHub to `config.local.json`, which git ignores, so `archi update` never runs into your changes. The bot speaks English; for Russian, start with `echo '{ "lang": "ru", "setupDone": false }' > config.local.json` (`setupDone: false` keeps the setup questions).
+`config.json` in the repository is a shared template. The setup in the chat writes your folders, sites and GitHub to `config.local.json`, which git ignores, so `archi update` never runs into your changes. The bot speaks English; for Russian, start with `echo '{ "lang": "ru" }' > config.local.json`.
 
 Optional, from the same folder:
 

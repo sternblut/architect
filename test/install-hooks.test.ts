@@ -58,10 +58,11 @@ test("the test folder of any Architect checkout is internal; testing and unrelat
 });
 
 // config.json in the repo is the template; a Mac's own settings go in config.local.json
-test("local settings override the template; setup runs only without them", async () => {
+test("local settings override the template; setup runs on a new install", async () => {
   const { mergeConfig } = await import("../src/config");
   const template = { lang: "en", hookPort: 47300, setupDone: false };
   expect(mergeConfig(template)).toEqual(template); // a new install: setup
-  expect(mergeConfig(template, { lang: "ru", sites: [{ name: "Маяк" }] })).toEqual({ lang: "ru", hookPort: 47300, sites: [{ name: "Маяк" }] }); // own settings: no setup
+  expect(mergeConfig(template, { lang: "ru" })).toEqual({ ...template, lang: "ru" }); // a new install with a language set: setup still
+  expect(mergeConfig(template, { lang: "ru", sites: [{ name: "Маяк" }] }, false)).toEqual({ lang: "ru", hookPort: 47300, sites: [{ name: "Маяк" }] }); // in use before setup existed: no setup
   expect(mergeConfig(template, { setupDone: true })).toEqual({ lang: "en", hookPort: 47300, setupDone: true }); // setup done
 });
