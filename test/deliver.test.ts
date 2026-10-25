@@ -2,7 +2,7 @@
 // in a row to a background session open through `claude attach`. claude and ps are stubs with state in a file that
 // behave like Claude Code 2.1.3xx.
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRow } from "../src/sessions";
@@ -10,6 +10,7 @@ import type { AgentRow } from "../src/sessions";
 const dir = mkdtempSync(join(tmpdir(), "arch-deliver-"));
 process.env.ARCH_STATE_DIR = dir;
 process.env.ARCH_LOGS_DIR = dir;
+process.env.CLAUDE_RESTART_DIR = join(dir, "restart");
 const FAKE = join(dir, "fake.json");
 process.env.FAKE_STATE = FAKE;
 
@@ -99,6 +100,23 @@ describe("words to a live session go through the courier, never by restarting it
     set({ attached: ["a1b2c3d4"] });
     expect((await deliver(row(), "Посмотри итоги недели")).ok).toBe(true);
     expect(fake().calls).toEqual([]);
+  });
+
+  test("the same for a Terminal tab with the restart wrapper: the tab isn't restarted", async () => {
+    // sh stands for the tab's shell with the wrapper's mark, sleep for its claude
+    const tab = Bun.spawn(["sh", "-c", "sleep 30 & echo $!; wait"], { stdout: "pipe" });
+    const first = await tab.stdout.getReader().read(); // the first line: sleep's pid
+    const pid = Number(new TextDecoder().decode(first.value).split("\n")[0]);
+    mkdirSync(join(dir, "restart"), { recursive: true });
+    writeFileSync(join(dir, "restart", `${tab.pid}.tab`), `v2 ${dir}`);
+    try {
+      set({ sessions: [{ ...row(), kind: "interactive", pid }] });
+      expect((await deliver(row(), "Посмотри итоги недели")).how).toBe("sent");
+      expect(sent).toEqual([[pid, words("Посмотри итоги недели")]]);
+      expect(existsSync(join(dir, "restart", String(tab.pid)))).toBe(false); // no restart request for the wrapper
+    } finally {
+      tab.kill();
+    }
   });
 
   test("the architect's own note goes as it is, not as the owner's words", async () => {
