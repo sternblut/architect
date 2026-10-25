@@ -578,23 +578,15 @@ export const pendingRestarts = {
 // raw: note is program output, not our words, and is not shown to the owner
 export type Delivery = { ok: boolean; how: "queued" | "sent" | "resumed" | "needs-sendmessage" | "failed" | "old-tab" | "self"; note: string; raw?: boolean };
 
-// Delivers text the most direct way: a Terminal session with the wrapper resumes in its tab with it; a busy worker gets
-// it from the hook at its next step; any other live session gets it in its running process through the courier, marked
-// as the owner's words. What must be his own message (/goal, «принято») and a stopped session resume the conversation.
+// Delivers text the most direct way: a busy worker gets it from the hook at its next step; any other live session gets
+// it in its running process through the courier, marked as the owner's words. What must be his own message (/goal,
+// «принято») resumes the conversation with it: in its own tab for a Terminal session with the wrapper. So does a
+// stopped session.
 export function deliver(row: AgentRow, text: string): Promise<Delivery> {
   return oneAtATime(row, (r) => deliverNow(r, text));
 }
 
 async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
-  // the tab resumes the conversation with the text as the user's own message (`claude --resume <id> "<text>"`;
-  // a "/goal …" sets the goal and starts on it)
-  if (row.kind !== "background" && (await wrapVersion(row)) >= 2) {
-    if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) {
-      pendingRestarts.add(row.sessionId!, text);
-      return { ok: true, how: "queued", note: tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step") };
-    }
-    return restartInTab(row, text);
-  }
   const w = row.sessionId ? workers.get(row.sessionId) : undefined;
   const busy = row.status === "busy" || (row.state === "working" && row.status !== "idle" && !!row.pid);
   const onPermission = row.waitingFor === "permission prompt";
@@ -609,12 +601,19 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
         : tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step"),
     };
   }
-  // Words go to the live process through the courier: no restart, so its window and background agents stay.
-  // What must be the owner's own message (a slash command such as /goal, «принято» that closes a goal) still
-  // goes in by resuming the conversation with it.
+  // Words go to the live process through the courier: no restart, so its window, tab and background agents stay.
   if (row.pid && !ownMessage(text)) {
     if (await courier(row.pid, ownerWords([text]), row.cwd)) return { ok: true, how: "sent", note: tr("передал в работающую сессию", "passed on to the running session") };
     return { ok: false, how: "needs-sendmessage", note: "курьер не достучался до сессии — передать можно сообщением между сессиями" };
+  }
+  // The owner's own message (a slash command such as /goal, «принято» that closes a goal): a Terminal tab with the
+  // wrapper resumes the conversation with it as the user's message (`claude --resume <id> "<text>"`)
+  if (row.kind !== "background" && (await wrapVersion(row)) >= 2) {
+    if (row.status === "busy" || row.state === "working" || (row.waitingFor && row.waitingFor !== "input needed")) {
+      pendingRestarts.add(row.sessionId!, text);
+      return { ok: true, how: "queued", note: tr("передам ваше сообщение, как только она закончит текущий шаг", "I’ll pass on your message as soon as it finishes the current step") };
+    }
+    return restartInTab(row, text);
   }
   if (row.kind !== "background" || !row.sessionId || !row.id) return { ok: false, how: "needs-sendmessage", note: "сессия в терминале без обёртки перезапуска — передать можно только сообщением между сессиями" };
   if (busy || onPermission) return { ok: false, how: "needs-sendmessage", note: "чужая занятая сессия — передать можно только сообщением между сессиями" };
