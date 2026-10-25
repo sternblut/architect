@@ -28,7 +28,10 @@ if (a[0] === "agents") console.log(JSON.stringify(s.sessions));
 else if (a[0] === "stop") {
   s.calls.push("stop " + a[1]);
   const r = s.sessions.find((x) => x.id === a[1]);
-  if (r && !s.stuck.includes(a[1])) Object.assign(r, { pid: undefined, status: "idle", state: "stopped" });
+  if (r && !s.stuck.includes(a[1])) {
+    Object.assign(r, { pid: undefined, status: "idle", state: "stopped" });
+    s.attached = s.attached.filter((x) => x !== a[1]); // its attach clients exit with "Session … has exited"
+  }
   await save();
   console.log("stopped " + a[1]);
 } else if (a[0] === "--resume") {
@@ -52,13 +55,14 @@ writeFileSync(
   join(dir, "ps"),
   `#!/usr/bin/env bun
 const s = JSON.parse(await Bun.file(process.env.FAKE_STATE).text());
-console.log("?? /usr/sbin/cfprefsd agent");
-for (const id of s.attached) console.log("ttys016  /Users/x/.local/bin/claude attach " + id);
+console.log("   88     1 ??       /usr/sbin/cfprefsd agent");
+// pid, the tab's shell, tty, command line
+for (const id of s.attached) console.log("  101   555 ttys016  /Users/x/.local/bin/claude attach " + id);
 `,
   { mode: 0o755 },
 );
 
-const { ARCH_NOTE, deliver, setClaudeBin, setCourier, setPsBin } = await import("../src/sessions");
+const { ARCH_NOTE, deliver, deliverQueued, pendingRestarts, setClaudeBin, setCourier, setPsBin } = await import("../src/sessions");
 setClaudeBin(join(dir, "claude"));
 setPsBin(join(dir, "ps"));
 
@@ -157,6 +161,49 @@ describe("the owner's own message (принято, /goal) resumes the conversati
     expect((await deliver(row(), "Посмотри итоги недели")).ok).toBe(true);
     expect(sent).toEqual([]);
     expect(fake().calls).toEqual(["resume a1b2c3d4 Посмотри итоги недели"]);
+  });
+
+  test("open in a tab through attach without the wrapper: not restarted, the tab would be left empty", async () => {
+    set({ attached: ["a1b2c3d4"] });
+    expect(await deliver(row(), "принято")).toMatchObject({ ok: false, how: "old-tab" });
+    expect(fake().calls).toEqual([]);
+  });
+
+  test("open in a tab with the wrapper: resumed with it, and the tab is told to attach again once it is back", async () => {
+    set({ attached: ["a1b2c3d4"] });
+    mkdirSync(join(dir, "restart"), { recursive: true });
+    writeFileSync(join(dir, "restart", "555.attach"), "v1 a1b2c3d4");
+    try {
+      expect((await deliver(row(), "принято")).ok).toBe(true);
+      expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 принято"]);
+      expect(readFileSync(join(dir, "restart", "555.reattach"), "utf8")).toBe("a1b2c3d4\ngo\n");
+    } finally {
+      writeFileSync(join(dir, "restart", "555.attach"), "");
+    }
+  });
+
+  test("a busy session gets it once it has finished its step, not as words in the middle of it", async () => {
+    set({ sessions: [{ ...row(), status: "busy", state: "working" }] });
+    expect(await deliver(row(), "/goal довести фичу")).toMatchObject({ ok: true, how: "queued" });
+    expect(sent).toEqual([]);
+    expect(fake().calls).toEqual([]);
+    expect(pendingRestarts.all()["a1b2c3d4-0001"]?.prompt).toBe("/goal довести фичу");
+    pendingRestarts.remove("a1b2c3d4-0001");
+  });
+
+  test("what comes after it waits behind it, and both go in order once the step is over", async () => {
+    set({ sessions: [{ ...row(), status: "busy", state: "working" }] });
+    await deliver(row(), "/goal довести фичу");
+    expect((await deliver(row(), "и пересланные")).how).toBe("queued");
+    expect(sent).toEqual([]);
+    expect(pendingRestarts.all()["a1b2c3d4-0001"]).toMatchObject({ prompt: "/goal довести фичу", then: ["и пересланные"] });
+    set({ sessions: [{ ...row(), status: "idle", state: "done" }] });
+    const { listAgents } = await import("../src/sessions");
+    const done = await deliverQueued(await listAgents(true));
+    expect(done.map((d) => d.res.ok)).toEqual([true]);
+    expect(fake().calls).toEqual(["stop a1b2c3d4", "resume a1b2c3d4 /goal довести фичу"]);
+    expect(sent).toEqual([[8000, words("и пересланные")]]); // after the goal, into the resumed process
+    expect(pendingRestarts.all()["a1b2c3d4-0001"]).toBeUndefined();
   });
 
   test("doesn't resume a session that didn't stop, which would start a copy", async () => {

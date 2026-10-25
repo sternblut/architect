@@ -8,7 +8,7 @@ import { weekWarning } from "./limits";
 import { wakeAfterLimit } from "./limitwake";
 import { freshLinks, type Link, markTold } from "./links";
 import { displayName } from "./ui";
-import { deliver, listAgents, pendingRestarts, restartSession, sessionDigest, workers, type AgentRow } from "./sessions";
+import { deliverQueued, listAgents, pendingRestarts, sessionDigest, workers, type AgentRow } from "./sessions";
 import type { Telegram } from "./telegram";
 import type { Board } from "./board";
 import type { SessionUI } from "./ui";
@@ -109,24 +109,14 @@ export class Watcher {
 
   // Queued restarts and messages: once the session ends its turn, do it and tell the owner in one line
   private async restarts() {
-    const pending = pendingRestarts.all();
-    if (!Object.keys(pending).length) return;
+    if (!Object.keys(pendingRestarts.all()).length) return;
     const rows = await listAgents(true);
-    for (const [sessionId, p] of Object.entries(pending)) {
-      const r = rows.find((x) => x.sessionId === sessionId && x.pid);
-      if (!r || Date.now() - p.at > 12 * 3600_000) {
-        pendingRestarts.remove(sessionId);
-        continue;
-      }
-      if (r.status === "busy" || r.state === "working" || (r.waitingFor && r.waitingFor !== "input needed")) continue;
-      pendingRestarts.remove(sessionId);
-      const res = p.prompt ? await deliver(r, p.prompt) : await restartSession(r);
-      if (res.how === "queued") continue;
-      const name = displayName(sessionId, r.cwd, rows);
-      const done = p.prompt
+    for (const { row: r, prompt, res } of await deliverQueued(rows)) {
+      const name = displayName(r.sessionId!, r.cwd, rows);
+      const done = prompt
         ? tr(`${name} закончила шаг и получила ваше сообщение.`, `${name} finished its step and got your message.`)
         : tr(`${name} закончила шаг и перезапущена на новой версии, продолжает с того же места.`, `${name} finished its step and restarted on the new version, picking up where it left off.`);
-      const failed = tr(`${name}: ${p.prompt ? "передать сообщение" : "перезапустить"} не вышло — ${res.note}.`, `${name}: couldn’t ${p.prompt ? "pass on your message" : "restart it"} — ${res.note}.`);
+      const failed = tr(`${name}: ${prompt ? "передать сообщение" : "перезапустить"} не вышло — ${res.note}.`, `${name}: couldn’t ${prompt ? "pass on your message" : "restart it"} — ${res.note}.`);
       await this.d.tg.send(res.ok ? done : failed);
     }
   }
