@@ -3,7 +3,7 @@
 // without notifications; a new one is sent only if the old one was deleted. "What's up" gets the same view.
 import { join } from "node:path";
 import type { Approvals } from "./approvals";
-import { STATE, tr } from "./config";
+import { ARCHITECT, STATE, tr } from "./config";
 import { stopHolds } from "./holds";
 import type { AgentRow } from "./sessions";
 import { renderView, view, type Ask, type Overview, type View } from "./status";
@@ -153,7 +153,7 @@ export class Board {
         const verb = cap(i.what.replace(/\?$/, ""));
         // no name for the architect's own request, or when the verb already names the session
         const stem = a.name.split(/[\s:]+/)[0].toLowerCase().slice(0, 4);
-        const who = a.name === "Архитектор" || (stem.length >= 3 && verb.toLowerCase().includes(stem)) ? "" : `: ${a.name}`;
+        const who = a.name === ARCHITECT || (stem.length >= 3 && verb.toLowerCase().includes(stem)) ? "" : `: ${a.name}`;
         // the first label within 40 characters: "Push code to main: Docs", the verb alone, then cut by words
         const label = [`${verb}${who}`, verb, words(verb, 40 - who.length) + who, words(verb, 40)].find((t) => t.length <= 40 && t.length > who.length) ?? clip(verb.split(" ")[0], 40);
         // reversible: one tap here, the brief with screenshots has arrived; irreversible: only from the brief itself
