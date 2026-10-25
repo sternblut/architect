@@ -76,11 +76,11 @@ function fakeTelegram() {
   const press = (data: string) =>
     tg.bot.handleUpdate({ update_id: ++u, callback_query: { id: String(u), from: { id: 333333, is_bot: false, first_name: "A" }, chat_instance: "1", data, message: { message_id: 5, date: 0, chat: { id: 333333, type: "private" } } } } as any);
   const texts = (kb: any) => (kb?.inline_keyboard ?? []).map((r: any[]) => r.map((b) => b.text));
-  // Wait until the message is sent (the brief runs git commands, slower on a slow machine). After sending, the request
-  // still has to register as pending: pause briefly, or the tap arrives first and finds it expired.
-  const sent = async (k = 1) => {
+  // Wait until the message is sent (the brief runs git commands, slower on a slow machine) and, given the approvals,
+  // until the request is registered as pending: otherwise a tap can arrive first and find it expired.
+  const sent = async (k = 1, approvals?: { list(): unknown[] }) => {
     for (let i = 0; i < 250 && calls.filter((c) => c.method === "sendRichMessage").length < k; i++) await Bun.sleep(20);
-    await Bun.sleep(50);
+    for (let i = 0; i < 250 && approvals && approvals.list().length < k; i++) await Bun.sleep(10);
     return calls.filter((c) => c.method === "sendRichMessage");
   };
   return { tg, calls, press, texts, sent };
@@ -140,7 +140,7 @@ describe("pinned summary and /status", () => {
     const approvals = new Approvals(tg);
     const board = new Board({ tg, ui: new SessionUI(tg), approvals });
     const decision = approvals.confirm({ source: "Architect build", action: "git push origin build:main", timeoutMs: 5000 });
-    await sent();
+    await sent(1, approvals);
     const c = board.compose(overview(), true);
     expect(c.md.replace(/\*\*/g, "")).toContain("Architect build — push code to main?");
     expect(plain(c.md)).toMatch(/Updated at \d\d:\d\d$/);
@@ -234,7 +234,7 @@ describe("deploy and delete requests", () => {
     const approvals = new Approvals(tg);
     const board = new Board({ tg, ui: new SessionUI(tg), approvals });
     const del = approvals.confirm({ source: "«Beacon header»", action: "rm notes.txt", tool: "Bash", input: { command: "rm notes.txt", description: "Delete notes" }, cwd: beacon, timeoutMs: 8000 });
-    const card = (await sent())[0];
+    const card = (await sent(1, approvals))[0];
     expect(card.payload.rich_message.markdown).toStartWith("Delete file “notes.txt” in project “Beacon”?");
     expect(texts(card.payload.reply_markup)).toEqual([["Delete", "Decline"]]);
     expect(approvals.list()[0].final).toBe(true); // "Can’t be undone": not from the dashboard
@@ -257,7 +257,7 @@ describe("question with options", () => {
       questions: [{ question: "Blog wants to delete 34 GB of old draft images. Delete?", options: [{ label: "Yes, delete (Recommended)", description: "Frees about 34 GB" }, { label: "No", description: "Blog works with what it has" }] }],
       timeoutMs: 5000,
     });
-    const sent = (await sentAll())[0];
+    const sent = (await sentAll(1, approvals))[0];
     const md = plain(sent.payload.rich_message.markdown);
     expect(md).toStartWith("Blog wants to delete 34 GB of old draft images. Delete?");
     expect(md).toContain("Session “Blog” recommends “Yes, delete”: frees about 34 GB.");
@@ -275,7 +275,7 @@ describe("question with options", () => {
     const { tg, calls, press, texts, sent: sentAll } = fakeTelegram();
     const approvals = new Approvals(tg);
     void approvals.ask({ source: "Архитектор", questions: [{ question: "Which sites should the review cover?", multiSelect: true, options: [{ label: "Beacon" }, { label: "Arena" }] }], timeoutMs: 5000 });
-    const sent = (await sentAll())[0];
+    const sent = (await sentAll(1, approvals))[0];
     expect(sent.payload.rich_message.markdown).toContain("You can pick several, then tap “Send”"); // last line: the typographer drops the final dot
     await press(sent.payload.reply_markup.inline_keyboard[0][0].callback_data);
     await press(sent.payload.reply_markup.inline_keyboard[1][0].callback_data);
