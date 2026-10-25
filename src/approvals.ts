@@ -42,7 +42,8 @@ export const rules = {
     writeJson(RULES(), rules.list().filter((x) => !(x.kind === r.kind && x.project === r.project)));
   },
 };
-const day = (t: number) => new Date(t).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+// "25.10" / "Oct 25"
+export const day = (t: number) => tr(new Date(t).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }), new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
 export const ruleText = (r: NonNullable<Brief["rule"]>) =>
   r.kind === "deploy" ? tr(`выкладка ${r.project}`, `deploying ${r.project}`) : r.kind === "delete" ? tr(`удаление в ${quote(r.project)}`, `deleting in ${quote(r.project)}`) : tr(`обновление ${quote(r.project)}`, `updating ${quote(r.project)}`);
 const always = (r: NonNullable<Brief["rule"]>) =>

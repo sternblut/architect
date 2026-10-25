@@ -2,7 +2,7 @@
 import { judgeNow, refresh as understandRefresh, understood } from "./understand";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Approvals, ruleText, rules, type Rule } from "./approvals";
+import { Approvals, day, ruleText, rules, type Rule } from "./approvals";
 import { ensureHookSecret, readSecret } from "./secret";
 import { Guest } from "./guest";
 import { Setup } from "./setup";
@@ -282,7 +282,7 @@ tg.onCallback("sg", async ({ id, value, messageId, answer }) => {
 });
 
 // "without asking" rules: a numbered list with a button per number
-const rulesMd = (all: Rule[]) => `${tr("Без вопросов сейчас", "Without asking now")}:\n${all.map((r, i) => `${i + 1}. ${ruleText(r)}, ${tr("с", "since")} ${new Date(r.at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}`).join("\n")}`;
+const rulesMd = (all: Rule[]) => `${tr("Без вопросов сейчас", "Without asking now")}:\n${all.map((r, i) => `${i + 1}. ${ruleText(r)}, ${tr("с", "since")} ${day(r.at)}`).join("\n")}`;
 const ruleKey = (r: Rule) => Bun.hash(`${r.kind}:${r.project}`).toString(36).slice(0, 10); // callback data is limited to 64 bytes
 const rulesButtons = (all: Rule[]) => all.map((r, i) => [{ text: tr(`Снова спрашивать ${i + 1}`, `Ask again ${i + 1}`), data: `rl:${ruleKey(r)}` }]);
 tg.onCallback("rl", async ({ id, messageId, answer }) => {

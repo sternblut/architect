@@ -13,11 +13,11 @@ type Storage = {
   delete(keys: string[]): Promise<number>;
   list<T>(o: { prefix: string; limit?: number }): Promise<Map<string, T>>;
 };
-type State = { asleep: boolean; pathHash?: string; owner?: number; since?: string; summary?: string; lastTs: number; group?: string };
+type State = { asleep: boolean; pathHash?: string; owner?: number; since?: string; summary?: string; lang?: "ru" | "en"; lastTs: number; group?: string };
 type Msg = { message_id: number; from?: { id: number }; chat: { id: number; type: string }; text?: string; media_group_id?: string; is_topic_message?: boolean; message_thread_id?: number };
 type Update = { update_id: number; message?: Msg; callback_query?: { id: string; from: { id: number } } };
 
-const STATUS = /^(\/status\b|(что у нас|статус|сводка)[\s?!.]*$)/i; // /status or a Russian "what's up"
+const STATUS = /^(\/status\b|(что у нас|статус|сводка|what'?s up|status|summary)[\s?!.]*$)/i; // /status or "what's up"
 const DECISION = /^(да|нет|yes|no)\s+[a-z0-9]{6,10}$/i; // the "yes <id>" fallback of src/approvals.ts
 const QUEUE = "u:";
 
@@ -56,8 +56,8 @@ export class Relay {
     const st = await this.state();
     if (ts <= st.lastTs) return new Response(null, { status: 401 }); // a replay of an accepted request
     if (pathname === "/sleep") {
-      const b = JSON.parse(body) as Pick<State, "pathHash" | "owner" | "since" | "summary">;
-      await this.save({ asleep: true, pathHash: b.pathHash, owner: b.owner, since: b.since, summary: b.summary, lastTs: ts });
+      const b = JSON.parse(body) as Pick<State, "pathHash" | "owner" | "since" | "summary" | "lang">;
+      await this.save({ asleep: true, pathHash: b.pathHash, owner: b.owner, since: b.since, summary: b.summary, lang: b.lang, lastTs: ts });
       return json({ ok: true });
     }
     // /pull: the Mac is awake; delete what it acknowledged, return the rest, forget the path and summary
@@ -73,8 +73,9 @@ export class Relay {
     const st = await this.state();
     if (!st.asleep || !st.pathHash || hash !== st.pathHash) return none();
     if (!u) return ok();
+    const tr = (ru: string, en: string) => (st.lang === "en" ? en : ru); // the owner's language, from the Mac
     const q = u.callback_query;
-    if (q) return q.from.id === st.owner ? json({ method: "answerCallbackQuery", callback_query_id: q.id, text: "Mac спит — нажмите, когда проснётся." }) : ok();
+    if (q) return q.from.id === st.owner ? json({ method: "answerCallbackQuery", callback_query_id: q.id, text: tr("Mac спит — нажмите, когда проснётся.", "The Mac is asleep — tap again once it wakes up.") }) : ok();
     const m = u.message;
     if (!m || m.from?.id !== st.owner || m.chat.type !== "private") return ok(); // strangers: silently, not queued
     const to = {
@@ -84,14 +85,14 @@ export class Relay {
       reply_parameters: { message_id: m.message_id, allow_sending_without_reply: true },
     };
     const text = (m.text ?? "").trim();
-    if (STATUS.test(text)) return json({ ...to, text: st.summary ? `Mac спит ${st.since}. ${st.summary}` : `Mac спит ${st.since}, сводки перед сном нет.` });
-    if (DECISION.test(text)) return json({ ...to, text: "Решения — только кнопкой, когда Mac проснётся." });
+    if (STATUS.test(text)) return json({ ...to, text: st.summary ? tr(`Mac спит ${st.since}. ${st.summary}`, `The Mac is asleep ${st.since}. ${st.summary}`) : tr(`Mac спит ${st.since}, сводки перед сном нет.`, `The Mac is asleep ${st.since}; no summary from before it slept.`) });
+    if (DECISION.test(text)) return json({ ...to, text: tr("Решения — только кнопкой, когда Mac проснётся.", "Decisions only with a button, once the Mac wakes up.") });
     // a redelivered update lands in the same slot; reply again, since Telegram didn't get the last reply
     await this.ctx.storage.put(QUEUE + String(u.update_id).padStart(12, "0"), u);
     if (m.media_group_id && m.media_group_id === st.group) return ok(); // one reply per album
     if (m.media_group_id !== st.group) await this.save({ ...st, group: m.media_group_id });
     const n = (await this.ctx.storage.list({ prefix: QUEUE })).size;
-    return json({ ...to, text: n > 1 ? `Запомнил — в очереди ${n}. Начну, когда Mac проснётся.` : `Mac спит ${st.since}. Запомнил — начну, когда проснётся.` });
+    return json({ ...to, text: n > 1 ? tr(`Запомнил — в очереди ${n}. Начну, когда Mac проснётся.`, `Noted — ${n} in the queue. I’ll start once the Mac wakes up.`) : tr(`Mac спит ${st.since}. Запомнил — начну, когда проснётся.`, `The Mac is asleep ${st.since}. Noted — I’ll start once it wakes up.`) });
   }
 
   // The Mac's signature: Ed25519 over "path\ntime\nbody" with a fresh time (±60 s); fetch checks that time increases

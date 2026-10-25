@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, LOGS } from "./config";
+import { HOME, LOGS, tr } from "./config";
 
 const knownSecrets = new Set<string>();
 export function registerSecret(s: string) {
@@ -105,8 +105,8 @@ export function ago(ms: number): string {
 // "с 13:50" today, "с 14 октября" on an earlier day
 export function since(ms: number) {
   const d = new Date(ms);
-  const day = (x: Date) => x.toLocaleDateString("ru-RU");
-  return day(d) === day(new Date()) ? `с ${hhmm(d)}` : `с ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`;
+  if (d.toDateString() === new Date().toDateString()) return tr(`с ${hhmm(d)}`, `since ${hhmm(d)}`);
+  return tr(`с ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}`, `since ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
 }
 
 export function hhmm(d = new Date()) {

@@ -69,10 +69,10 @@ const press = (from: number, data: string) => ({
 const post = (url: string, u: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(u) });
 
 describe("cloud relay (Worker)", () => {
-  async function asleep() {
+  async function asleep(extra: Record<string, unknown> = {}) {
     const c = makeCloud();
     const path = "p".repeat(43);
-    const r = await c.cloud.fetch(await signedReq("/sleep", { pathHash: await sha(path), owner: OWNER, since: "с 14:05", summary: "Сводка на 14:03:\n\nСессии — живых 2" }));
+    const r = await c.cloud.fetch(await signedReq("/sleep", { pathHash: await sha(path), owner: OWNER, since: "с 14:05", summary: "Сводка на 14:03:\n\nСессии — живых 2", ...extra }));
     expect(r.status).toBe(200);
     const hook = (u: unknown, p = path) => c.cloud.fetch(new Request(`http://relay/u/${p}`, { method: "POST", body: JSON.stringify(u) }));
     return { ...c, path, hook };
@@ -109,6 +109,13 @@ describe("cloud relay (Worker)", () => {
     const r2 = await json(hook(msg(OWNER, "и арену")));
     expect(r2.text).toBe("Запомнил — в очереди 2. Начну, когда Mac проснётся.");
     expect(queued()).toBe(2);
+  });
+
+  test("an English install gets its replies in English", async () => {
+    const { hook } = await asleep({ lang: "en", since: "since 14:05", summary: "Summary at 14:03" });
+    expect((await json(hook(msg(OWNER, "fix the beacon")))).text).toBe("The Mac is asleep since 14:05. Noted — I’ll start once it wakes up.");
+    expect((await json(hook(msg(OWNER, "what's up?")))).text).toBe("The Mac is asleep since 14:05. Summary at 14:03");
+    expect((await json(hook(press(OWNER, "a:abc123:y")))).text).toBe("The Mac is asleep — tap again once it wakes up.");
   });
 
   test("the summary comes from the snapshot, a tap gets a toast, neither is queued; strangers get silence", async () => {
