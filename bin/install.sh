@@ -55,7 +55,8 @@ main() {
   [ "$(shasum -a 256 "$tmp/archi.tgz" | cut -d' ' -f1)" = "$SHA" ] || die "$(t "Код не совпал с раздачей — установка остановлена." "The code doesn’t match the distribution — installation stopped.")"
   mkdir "$tmp/app" && tar -xzf "$tmp/archi.tgz" -C "$tmp/app"
   (cd "$tmp/app" && bun install --frozen-lockfile --production >"$tmp/install.log" 2>&1) || die "$(t "Не поставились зависимости" "Dependencies didn’t install"): $(tail -n 3 "$tmp/install.log")"
-  # Reinstall: the previous version moves to app.old and hands back its settings, state, logs and notes.
+  # Reinstall: the previous version moves to app.old and hands back its settings (with the local ones set up in the
+  # chat), state, logs and notes.
   # If this is interrupted, everything is still in ~/.archi/app.old.
   if [ -d "$APP" ]; then
     "$APP/bin/arch" off >/dev/null 2>&1 || true
@@ -63,7 +64,7 @@ main() {
   fi
   mv "$tmp/app" "$APP" && touch "$APP/.installed-by-archi"
   if [ -d "$DIR/app.old" ]; then
-    for k in config.json state logs notes; do
+    for k in config.json config.local.json CLAUDE.local.md state logs notes; do
       if [ -e "$DIR/app.old/$k" ]; then mv "$DIR/app.old/$k" "$APP/"; fi
     done
     rm -rf "$DIR/app.old"
