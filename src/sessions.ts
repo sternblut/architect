@@ -632,3 +632,11 @@ async function deliverNow(row: AgentRow, text: string): Promise<Delivery> {
   if (w && newId && newId !== w.id) workers.patch(w.sessionId, { id: newId });
   return { ok: true, how: "resumed", note: "сессия продолжила работу с вашим сообщением" };
 }
+
+// The architect's own note to a session (message_session with note) is not quoted as the owner's words
+export const ARCH_NOTE = "Архитектор от себя — это не слова владельца: ";
+export function ownerWords(msgs: string[]) {
+  const own = msgs.filter((m) => !m.includes(ARCH_NOTE));
+  const said = own.length === 1 ? `Сообщение владельца из Telegram: «${own[0]}»` : own.length ? `Сообщения владельца из Telegram:\n${own.map((m) => `— «${m}»`).join("\n")}` : "";
+  return [said, ...msgs.filter((m) => m.includes(ARCH_NOTE))].filter(Boolean).join("\n\n");
+}

@@ -7,7 +7,7 @@ import type { Approvals, Decision, Question } from "./approvals";
 import { config, tr } from "./config";
 import { stopHolds } from "./holds";
 import { onReturn, ownerAway } from "./presence";
-import { listAgents, outbox, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
+import { listAgents, outbox, ownerWords, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
 import { candidateShots } from "./shots";
 import { ownerId } from "./telegram";
 import { clip, log } from "./util";
@@ -34,14 +34,6 @@ export const looksLikeQuestion = (t: string) => {
   const tail = t.trim().slice(-400);
   return /\?\s*(\*\*|_|»|")?\s*$/.test(tail) || /\?\s*\n/.test(tail) || /(жду (вашего|ваш|«|от вас)|скажите|выберите|подтвердите|ответьте|нужн[оа] ваш)/i.test(tail);
 };
-
-// The architect's own note to a session (message_session with note) is not quoted as the owner's words
-export const ARCH_NOTE = "Архитектор от себя — это не слова владельца: ";
-export function ownerWords(msgs: string[]) {
-  const own = msgs.filter((m) => !m.includes(ARCH_NOTE));
-  const said = own.length === 1 ? `Сообщение владельца из Telegram: «${own[0]}»` : own.length ? `Сообщения владельца из Telegram:\n${own.map((m) => `— «${m}»`).join("\n")}` : "";
-  return [said, ...msgs.filter((m) => m.includes(ARCH_NOTE))].filter(Boolean).join("\n\n");
-}
 
 // A /goal or another Stop hook keeps the session going, so it can't be held; the answer is delivered at the next stop
 function goalDriven(body: Record<string, any>, sid: string, cwd: string) {
