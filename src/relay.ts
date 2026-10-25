@@ -62,7 +62,7 @@ export class Relay {
     const t = Date.now();
     await Promise.race([this.d.tg.stop(), sleep(4000)]);
     const path = b64u(crypto.getRandomValues(new Uint8Array(32))); // never logged; grammY errors don't include the URL
-    await this.signed("/sleep", { pathHash: await sha256(path), owner, since: since(Date.now()), summary: this.summary() });
+    await this.signed("/sleep", { pathHash: await sha256(path), owner, since: since(Date.now()), summary: this.summary(), lang: config.lang ?? "ru" });
     await this.d.tg.bot.api.setWebhook(`${this.d.url}/u/${path}`, { allowed_updates: ["message", "callback_query"], max_connections: 1 }, within(6000));
     this.handed = true;
     log("relay", `Mac засыпает — бот у дежурного (${Date.now() - t} мс)`);
