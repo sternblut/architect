@@ -46,6 +46,21 @@ export type Incoming = {
 };
 type CallbackHandler = (args: { id: string; value: string; messageId: number; answer: (text?: string) => Promise<void> }) => Promise<void> | void;
 
+// Telegram's Bot API serves files up to 20 MB: a larger one is named with its size instead of a failed download
+const BOT_FILE_LIMIT = 20 * 1024 * 1024;
+function tooBig(m: Message): string | undefined {
+  const items: [{ file_size?: number } | undefined, string, string][] = [
+    [m.video, "видео", "a video"],
+    [m.document, "файл", "a file"],
+    [m.audio, "аудио", "an audio file"],
+    [m.voice, "голосовое", "a voice message"],
+    [m.video_note, "видеосообщение", "a video message"],
+    [m.photo?.at(-1), "фото", "a photo"],
+  ];
+  const hit = items.find(([f]) => (f?.file_size ?? 0) > BOT_FILE_LIMIT);
+  return hit ? tr(`${hit[1]} (${Math.round(hit[0]!.file_size! / 1048576)} МБ)`, `${hit[2]} (${Math.round(hit[0]!.file_size! / 1048576)} MB)`) : undefined;
+}
+
 export function ownerId(): number | undefined {
   return readJson<{ id?: number }>(OWNER_FILE, {}).id;
 }
@@ -362,12 +377,19 @@ export class Telegram {
     const first = msgs[0];
     const texts: string[] = [];
     const files: Incoming["files"] = [];
+    const missed: string[] = []; // files the bot couldn't get: the owner and the architect are told, not left to assume
     let voice: string | undefined;
     for (const m of msgs) {
       const t = m.text ?? m.caption ?? "";
       if (t) texts.push(t);
+      const big = tooBig(m);
+      if (big) {
+        missed.push(big);
+        continue;
+      }
       const f = await this.download(m).catch((e) => {
         log("tg", "не скачал файл", String(e));
+        missed.push(tr("файл не скачался", "a file didn’t download"));
         return null;
       });
       if (!f) continue;
@@ -385,6 +407,11 @@ export class Telegram {
         }
       }
       files.push(f);
+    }
+    if (missed.length) {
+      const what = [...new Set(missed)].join(", ");
+      texts.push(tr(`[Бот не смог открыть: ${what}. Telegram отдаёт ботам файлы только до 20 МБ.]`, `[The bot couldn’t open: ${what}. Telegram gives bots files only up to 20 MB.]`));
+      await this.send(tr(`Не открыл ${what}: Telegram отдаёт ботам файлы только до 20 МБ. Положите файл на Mac и скажите, где он, — или пришлите поменьше.`, `Couldn’t open ${what}: Telegram gives bots files only up to 20 MB. Put it on the Mac and say where, or send a smaller one.`), { silent: true, threadId: first.is_topic_message ? first.message_thread_id : undefined });
     }
     const r = first.reply_to_message;
     this.lastId = Math.max(this.lastId, ...msgs.map((x) => x.message_id));

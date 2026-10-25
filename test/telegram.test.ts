@@ -299,3 +299,18 @@ test("fix in place: new text, a corrected-at line, the same buttons", async () =
   expect(edit.payload.reply_markup.inline_keyboard[0][0].text).toBe("Ответить: Каталог");
   expect(await tg.correct(5, "нет такого")).toBe(false);
 });
+
+describe("files the bot can't get", () => {
+  test("a video over 20 MB isn't fetched: the owner is told at once, and the architect sees it is missing", async () => {
+    const { tg, calls } = makeTg();
+    const got: string[] = [];
+    tg.onIncoming((m) => got.push(m.text));
+    await tg.bot.handleUpdate(msg(OWNER, "", { text: undefined, caption: "вот пример", video: { file_id: "v1", file_unique_id: "u1", width: 1, height: 1, duration: 9, file_size: 35 * 1048576 } }) as any);
+    await Bun.sleep(50);
+    expect(calls.some((c) => c.method === "getFile")).toBe(false);
+    expect(got[0]).toContain("вот пример");
+    expect(got[0]).toContain("[Бот не смог открыть: видео (35 МБ)");
+    // typography binds short words and units with no-break spaces
+    expect(calls.some((c) => c.method.startsWith("send") && /Не\sоткрыл\sвидео\s\(35\sМБ\)/.test(JSON.stringify(c.payload)))).toBe(true);
+  });
+});
