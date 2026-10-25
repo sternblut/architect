@@ -5,6 +5,7 @@ import { config, tr } from "./config";
 import { ownerAway } from "./presence";
 import { collect } from "./status";
 import { weekWarning } from "./limits";
+import { wakeAfterLimit } from "./limitwake";
 import { freshLinks, type Link, markTold } from "./links";
 import { displayName } from "./ui";
 import { deliver, listAgents, pendingRestarts, restartSession, sessionDigest, workers, type AgentRow } from "./sessions";
@@ -60,6 +61,7 @@ export class Watcher {
     if (this.ticks % 30 === 0) await this.d.tg.refreshMe(); // topics may have been turned on in @BotFather
     if (this.ticks++ % 30 === 0) await this.flags();
     if (this.ticks % 3 === 0) await this.links();
+    if (this.ticks % 30 === 15) await this.afterLimit(rows);
     await this.restarts();
     await this.d.board.render(rows).catch((e) => log("watch", "пульт не обновился", String(e)));
     if (this.deploys.length && this.ticks % 3 === 0) await this.checkDeploys();
@@ -131,6 +133,14 @@ export class Watcher {
 
   // New preview pages go to the owner right away, one message per session, a button per page. The first passes only
   // record them. At night they are skipped, not held: the morning summary shows them as buttons anyway.
+  // Work that stopped on the Claude limit goes on after the reset; the owner gets one line (held till morning at night)
+  private async afterLimit(rows: AgentRow[]) {
+    const woke = await wakeAfterLimit(rows);
+    if (!woke.length) return;
+    const names = woke.map((r) => displayName(r.sessionId!, r.cwd, rows)).join(", ");
+    await this.d.tg.send(tr(`После сброса лимита Claude продолжили работу: ${names}.`, `After the Claude limit reset, these went back to work: ${names}.`), { silent: true });
+  }
+
   private async links() {
     const rows = await listAgents(true);
     for (const f of freshLinks(rows)) {
