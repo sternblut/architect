@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { ARCH_HOME, HOME, config, tr, type Site } from "./config";
 import { mdEsc } from "./md";
 import { classifyCommand, classifyTool, gitBranchSync, parseShell, stripPrefixes, type PolicyContext, type Verdict } from "./policy";
+import { stopsNow } from "./procs";
 import { clip, run, tilde } from "./util";
 
 // Where the advice leans; only that button is colored, and without advice none is
@@ -625,6 +626,8 @@ const REASONS_EN: [RegExp, string][] = [
   [/^claude (\S+) — вмешательство в сессии$/, "claude $1 interferes with sessions"],
   [/^остановка всех фоновых сессий$/, "stopping all background sessions"],
   [/^массовая остановка процессов$/, "stopping many processes at once"],
+  [/^остановка сессий Claude Code, хоста или macOS$/, "stopping Claude Code sessions, the host or macOS"],
+  [/^остановка процессов вне папки сессии$/, "stopping processes outside the session’s folder"],
   [/^остановка служб macOS$/, "stopping macOS services"],
   [/^управление архитектором$/, "managing the architect"],
   [/^секреты архитектора$/, "the architect’s secrets"],
@@ -637,7 +640,7 @@ const reasonEn = (reason: string) => {
 const human = (reason: string) => tr(HUMAN.find(([re]) => re.test(reason))?.[1] ?? reason, reasonEn(reason));
 const OBVIOUS = /^(удаление файлов|удаление ветки|git clean удаляет файлы без возврата)$/;
 
-const ctxFor = (cwd: string): PolicyContext => ({ cwd, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync });
+const ctxFor = (cwd: string): PolicyContext => ({ cwd, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, stops: stopsNow });
 
 // The chain's main command, the one the gate asks about, with its folder after cd and git -C
 function pick(command: string, cwd: string): { t: string[]; cwd: string; v: Verdict } {

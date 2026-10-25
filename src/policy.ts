@@ -1,5 +1,6 @@
 // The policy gate: what runs freely, what waits for the owner's yes in Telegram, what is refused.
 // Rules only restrict: they never grant more than the session already has.
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -14,7 +15,10 @@ export type PolicyContext = {
   keychainService: string;
   branch?: (cwd: string) => string;
   ask?: string[]; // which of the owner's five points to ask about; all of them when absent
+  stops?: (cmd: "pkill" | "killall", args: string[]) => Proc[] | null; // what it would stop right now; null: can't tell
 };
+// parent: the parent's command line
+export type Proc = { pid: number; name: string; args: string; cwd?: string; parent?: string };
 
 const OK: Verdict = { decision: "ok", reason: "" };
 const ask = (reason: string): Verdict => ({ decision: "ask", reason });
@@ -411,6 +415,29 @@ function targetVerdict(w: string, ctx: PolicyContext, what: "перезапис�
 // Commands for which a heredoc body is plain data: text for cat or grep, a commit message
 const STDIN_DATA = new Set(["cat", "tee", "grep", "egrep", "fgrep", "rg", "sed", "awk", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "jq", "yq", "column", "base64", "pbcopy", "git", "gh"]);
 
+// A session stops its own helpers by name (a screen recording, its dev server) without asking. A name or a pattern says
+// little (pkill matches a regex, -f the whole command line, which for a session holds its task), so the gate looks at
+// what it would stop right now and asks when that is Claude Code, the host, a shell, Terminal or macOS, a process of
+// another folder, or can't be told.
+const SYSTEM_PROC = /^(launchd|loginwindow|WindowServer|Finder|Dock|SystemUIServer|Terminal|iTerm2|login|sshd?|tmux|zsh|bash|sh|dash|fish)$/;
+const isClaude = (args: string) => /^(\S*\/)?claude(\s|$)/.test(args) || /claude-code|claude-agent-sdk/.test(args);
+function stopRule(cmd: "pkill" | "killall", args: string[], ctx: PolicyContext): Verdict {
+  const hits = args.some((x) => !x || /[$`]/.test(x)) ? null : ctx.stops?.(cmd, args); // the shell would change the words
+  if (!hits) return ask("массовая остановка процессов");
+  // parent: a Claude Code process's own tools and MCP servers
+  if (hits.some((p) => isClaude(p.args) || isClaude(p.parent ?? "") || p.args.includes(ctx.archHome) || SYSTEM_PROC.test(p.name))) return ask("остановка сессий Claude Code, хоста или macOS");
+  const roots = [ctx.cwd, real(ctx.cwd)];
+  if (hits.some((p) => !p.cwd || !roots.some((r) => p.cwd === r || p.cwd!.startsWith(`${r}/`)))) return ask("остановка процессов вне папки сессии");
+  return OK;
+}
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
 function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: number, piped = false): Verdict {
   const { t: t1, writes, appends, stdin } = split(t0);
   const t = stripPrefixes(t1);
@@ -560,7 +587,7 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
   // other sessions and processes, the architect's service, the machine
   if (cmd === "claude" && ["stop", "kill", "rm", "respawn", "purge"].includes(t[1] ?? "")) v = worst(v, ask(`claude ${t[1]} — вмешательство в сессии`));
   if (cmd === "claude" && t[1] === "daemon" && t[2] === "stop") v = worst(v, ask("остановка всех фоновых сессий"));
-  if (cmd === "pkill" || cmd === "killall") v = worst(v, ask("массовая остановка процессов"));
+  if (cmd === "pkill" || cmd === "killall") v = worst(v, stopRule(cmd, t.slice(1), ctx));
   if (cmd === "kill" && t.slice(1).some((x) => x === "-1" || x === "0")) v = worst(v, ask("остановка всех процессов"));
   if (cmd === "launchctl" && /^(bootout|unload|remove|disable|kill|stop)$/.test(t[1] ?? "")) v = worst(v, ask("остановка служб macOS"));
   if ((cmd === "arch" || cmd === "archi" || t[0].endsWith("/bin/arch")) && ["off", "stop", "restart", "token", "pair", "uninstall"].includes(t[1] ?? "")) v = worst(v, ask("управление архитектором"));

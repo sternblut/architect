@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyBash, classifyTool, parseShell, type PolicyContext } from "../src/policy";
+import { classifyBash, classifyTool, parseShell, type PolicyContext, type Proc } from "../src/policy";
 
 const ctx = (branch = "feature"): PolicyContext => ({
   cwd: "/Users/x/proj",
@@ -381,4 +381,38 @@ describe("questions follow the owner's ask setting", () => {
   });
   test("direct hosting access is always refused", () => expect(v("scp dist/x user@hosting.example.net:/www/")).toBe("deny"));
   test("without the setting, as before", () => expect(classifyTool("Bash", { command: "rm -rf old-frames" }, ctx()).decision).toBe("ask"));
+});
+
+describe("stopping processes by name looks at what it would stop", () => {
+  const rec: Proc = { pid: 101, name: "simctl", args: "/usr/bin/simctl io booted recordVideo /Users/x/proj/tmp/run.mov", cwd: "/Users/x/proj", parent: "/sbin/launchd" };
+  const v = (cmd: string, hits: Proc[] | null) => classifyBash(cmd, { ...ctx(), stops: () => hits });
+  const asks = (cmd: string, hits: Proc[] | null, reason: string) => expect(v(cmd, hits)).toEqual({ decision: "ask", reason });
+
+  test("its own screen recording, its dev server in a subfolder, or nothing at all: no question", () => {
+    expect(v(`pkill -INT -f "simctl io booted recordVideo"`, [rec]).decision).toBe("ok");
+    expect(v("pkill -f vite", [{ pid: 102, name: "node", args: "node /Users/x/proj/site/node_modules/.bin/vite", cwd: "/Users/x/proj/site" }]).decision).toBe("ok");
+    expect(v("killall simctl", [rec]).decision).toBe("ok");
+    expect(v("pkill -f vite", []).decision).toBe("ok");
+  });
+
+  test("a Claude Code session, its MCP server, the host, a shell or Terminal: asks", () => {
+    const reason = "остановка сессий Claude Code, хоста или macOS";
+    asks("pkill -f vite", [rec, { pid: 103, name: "2.1.310", args: "claude --resume abc fix the vite config", cwd: "/Users/x/proj" }], reason);
+    asks("pkill -f server", [{ pid: 104, name: "node", args: "node /Users/x/.npm/mcp/server.js", cwd: "/Users/x/proj", parent: "claude --resume abc" }], reason);
+    asks("pkill -f main.ts", [{ pid: 105, name: "bun", args: "bun /Users/x/arch/src/main.ts", cwd: "/Users/x/arch" }], reason);
+    asks("killall zsh", [{ pid: 106, name: "zsh", args: "-zsh", cwd: "/Users/x/proj" }], reason);
+  });
+
+  test("a process of another folder or of an unknown one: asks", () => {
+    const reason = "остановка процессов вне папки сессии";
+    asks("pkill -f vite", [{ pid: 107, name: "node", args: "node vite", cwd: "/Users/x/other" }], reason);
+    asks("pkill -f vite", [{ ...rec, cwd: undefined }], reason);
+    asks("pkill -f vite", [{ ...rec, cwd: "/Users/x/project" }], reason); // a neighbour with a longer name
+  });
+
+  test("when what it would stop can't be told: asks", () => {
+    asks("pkill -f vite", null, "массовая остановка процессов");
+    asks(`pkill -f "$NAME"`, [rec], "массовая остановка процессов"); // the shell would change the pattern
+    asks("pkill -f `cat name`", [rec], "массовая остановка процессов");
+  });
 });
