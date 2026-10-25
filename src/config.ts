@@ -62,15 +62,19 @@ export type Config = {
 // config.json is the shared template. Each Mac's own settings live in config.local.json, which git ignores, so
 // "archi update" never conflicts with them. ARCH_CONFIG replaces both with one complete file (tests, the bot manager).
 export const CONFIG_FILE = process.env.ARCH_CONFIG ?? join(DATA ?? ARCH_HOME, "config.local.json");
-// Local settings override the template; the template's setupDone applies only while there are no local settings
-export function mergeConfig(template: Record<string, unknown>, local?: Record<string, unknown>): Record<string, unknown> {
+// Local settings override the template. The template's setupDone (false: the setup questions) applies to a new
+// install, one with no owner paired yet, even if config.local.json already holds something such as the language; an
+// install that was in use before setup existed keeps going without it.
+export function mergeConfig(template: Record<string, unknown>, local?: Record<string, unknown>, fresh = true): Record<string, unknown> {
   if (!local) return template;
+  if (fresh) return { ...template, ...local };
   const { setupDone: _, ...rest } = template;
   return { ...rest, ...local };
 }
 const local = existsSync(CONFIG_FILE) ? JSON.parse(readFileSync(CONFIG_FILE, "utf8")) : undefined;
 const template = process.env.ARCH_CONFIG ? {} : JSON.parse(readFileSync(join(ARCH_HOME, "config.json"), "utf8"));
-export const config: Config = { roots: ["~"], sites: [], repos: [], githubOwner: "", hostingPattern: "", label: "app.archi.host", ...(mergeConfig(template, local) as Partial<Config>) } as Config;
+const fresh = !existsSync(join(STATE, "owner.json"));
+export const config: Config = { roots: ["~"], sites: [], repos: [], githubOwner: "", hostingPattern: "", label: "app.archi.host", ...(mergeConfig(template, local, fresh) as Partial<Config>) } as Config;
 if (!config.hostingPattern) config.hostingPattern = "(?!)"; // matches nothing
 config.roots = config.roots.map((r) => r.replace(/^~(?=\/|$)/, HOME));
 if (process.env.ARCH_HOOK_PORT) config.hookPort = Number(process.env.ARCH_HOOK_PORT);
