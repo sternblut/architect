@@ -185,3 +185,63 @@ describe("archi ask", () => {
     expect(r.decision).toBe("no");
   });
 });
+
+// Auto mode's classifier can refuse a step even after the gate's question, and before the owner sees a button. His card
+// comes from the refusal instead, and his yes reaches Claude Code as allow from the gate's hook.
+describe("auto mode refused what the owner decides", () => {
+  const worker = (sid: string) => writeFileSync(join(STATE, "workers.json"), JSON.stringify({ [sid]: { id: sid, sessionId: sid, name: "w", cwd: dir, task: "t", model: "opus", startedAt: 0 } }));
+  const step = (sid: string, command: string, description = "") => ({ ...base, session_id: sid, tool_name: "Bash", tool_input: { command, ...(description ? { description } : {}) } });
+
+  test("one card; after his yes the same command passes the gate with allow, whatever its description", async () => {
+    worker("w2");
+    const del = step("w2", "rm -rf /Users/x/old-renders", "Удаляю старые рендеры");
+    expect(await (await call("/hook/denied", { ...del, hook_event_name: "PermissionDenied", reason: "[Irreversible Local Destruction]" })).json()).toEqual({});
+    await Bun.sleep(50); // his yes: the stub answers at once
+    expect(asked).toEqual(["rm -rf /Users/x/old-renders"]);
+    const pre: any = await (await call("/hook/pre", { ...step("w2", "rm -rf /Users/x/old-renders", "Удаляю рендеры"), hook_event_name: "PreToolUse" })).json();
+    expect(pre.allow).toBe(true);
+    expect(pre.additionalContext).toContain("карточка с ним ушла владельцу"); // the session learns at once that the owner decides
+    const other: any = await (await call("/hook/pre", { ...step("w2", "rm -rf /Users/x/new-renders"), hook_event_name: "PreToolUse" })).json();
+    expect(other.allow).toBeUndefined();
+  });
+
+  test("he says no: nothing passes", async () => {
+    worker("w3");
+    confirmReply = "no";
+    await (await call("/hook/denied", { ...step("w3", "git push origin main"), hook_event_name: "PermissionDenied", reason: "[Production Deploy]" })).json();
+    await Bun.sleep(50);
+    const pre: any = await (await call("/hook/pre", { ...step("w3", "git push origin main"), hook_event_name: "PreToolUse" })).json();
+    expect(pre.allow).toBeUndefined();
+  });
+
+  test("the same refusal again while his card is open: no second card", async () => {
+    worker("w4");
+    confirmReply = "wait";
+    const del = { ...step("w4", "rm -rf /Users/x/cache-old"), hook_event_name: "PermissionDenied", reason: "[Irreversible Local Destruction]" };
+    await (await call("/hook/denied", del)).json();
+    await (await call("/hook/denied", del)).json();
+    expect(asked.length).toBe(1);
+  });
+
+  test("a refusal of ordinary work is not his question", async () => {
+    worker("w5");
+    await (await call("/hook/denied", { ...step("w5", "cat notes.md"), hook_event_name: "PermissionDenied", reason: "[Credential Materialization]" })).json();
+    expect(asked.length).toBe(0);
+  });
+});
+
+describe("Claude Code's own question about an rm through a variable", () => {
+  const viaVar = { ...base, tool_name: "Bash", tool_input: { command: "R=/private/tmp/claude-501/p/s/scratchpad/render && rm -f $R/p-*.png $R/*.pdf" } };
+  test("no card for the owner: the session is told to write the path out", async () => {
+    for (const path of ["/hook/any/permission", "/hook/permission"]) {
+      const r: any = await (await call(path, { ...viaVar, session_id: `v-${path.length}` })).json();
+      expect(r.hookSpecificOutput.decision.behavior).toBe("deny");
+      expect(r.hookSpecificOutput.decision.message).toContain("полный путь");
+    }
+    expect(asked.length).toBe(0);
+  });
+  test("an rm with the literal path still goes to the owner as before", async () => {
+    await (await call("/hook/any/permission", { ...base, session_id: "v3", tool_name: "Bash", tool_input: { command: "rm -rf /Users/x/site/old" } })).json();
+    expect(asked).toEqual(["rm -rf /Users/x/site/old"]);
+  });
+});

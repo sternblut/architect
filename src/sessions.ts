@@ -46,6 +46,7 @@ export function writeWorkerSettings(bunPath: string) {
     hooks: {
       PreToolUse: [cmd(21600, "block")],
       PermissionRequest: [cmd(21600)],
+      PermissionDenied: [cmd(15)],
       Stop: [cmd(60)],
       StopFailure: [cmd(15)],
       Notification: [cmd(15)],
