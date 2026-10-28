@@ -169,7 +169,11 @@ export const PROMISE = () => tr(/(?<!\p{L})(пришлю|напомню|сооб
 // Claude sign-in errors: after an account switch the old process gets them and a new one doesn't
 const AUTH = /Identity verification is required|authentication_error|invalid (x-api-key|bearer|oauth)|OAuth token|401 Unauthorized|please run \/login|not logged in/i;
 
-export function architectVerdict(tool: string, input: Record<string, unknown>): Verdict {
+// A yes is for exactly what the owner saw; a command repeated after it may come with other words in description
+const grantKey = (tool: string, input: Record<string, unknown>) => `${tool}\u0000${JSON.stringify(tool === "Bash" ? { ...input, description: undefined } : input)}`;
+
+// all: the verdict on all of the owner's points, as if config.ask asked about every one
+export function architectVerdict(tool: string, input: Record<string, unknown>, all = false): Verdict {
   if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tool)) {
     const p = resolve(String(input.file_path ?? input.notebook_path ?? ""));
     if (p.startsWith(NOTES + "/") || p.startsWith(MEMORY + "/")) return { decision: "ok", reason: "" };
@@ -185,7 +189,7 @@ export function architectVerdict(tool: string, input: Record<string, unknown>): 
   if (tool === "mcp__arch__stop_session") return { decision: "ask", reason: tr("работа прервётся, разговор сохранится — продолжить можно позже", "work will stop; the conversation is kept, so it can resume later") };
   if (tool === "mcp__arch__set_goal" || tool === "mcp__arch__clear_goal") return { decision: "ask", reason: tr("цель сессии меняется только с вашего разрешения", "a session’s goal changes only with your permission") };
   if (tool === "mcp__arch__start_session" && input.goal) return { decision: "ask", reason: tr("сессия с целью работает без остановок, пока цель не выполнена", "a session with a goal keeps working until the goal is met") };
-  return classifyTool(tool, input, { cwd: ARCH_HOME, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, ask: config.ask });
+  return classifyTool(tool, input, { cwd: ARCH_HOME, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, ask: all ? undefined : config.ask });
 }
 
 // Openers about itself ("Got it.", "Passed your words to X verbatim.", "You're right") break the writing rules, yet the
@@ -405,7 +409,7 @@ export class Architect {
                 : tool === "mcp__arch__stop_session"
                   ? tr(`Остановить ${s}`, `Stop ${s}`)
                   : `${tool}: ${toolBrief(tool, input) || clip(JSON.stringify(input), 600)}`;
-      const key = `${tool}\u0000${JSON.stringify(input)}`;
+      const key = grantKey(tool, input);
       if ((this.granted.get(key) ?? 0) > Date.now()) {
         this.granted.delete(key);
         return { behavior: "allow", updatedInput: input };
@@ -446,11 +450,13 @@ export class Architect {
     };
     const gate: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreToolUse") return {};
-      const v = architectVerdict(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>);
+      const ti = (input.tool_input ?? {}) as Record<string, unknown>;
+      const v = architectVerdict(input.tool_name, ti);
+      // allowed with a button after auto mode refused it (denied, below): allow from the hook gets it past the classifier
+      if (v.decision !== "deny" && (this.granted.get(grantKey(input.tool_name, ti)) ?? 0) > Date.now()) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } };
       // the host's own tools are safe by design and need no question; auto mode decides the rest
       if (v.decision === "ok") return input.tool_name.startsWith("mcp__arch__") ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } } : {};
       if (v.decision === "ask" && OWNER_WORD.includes(input.tool_name)) {
-        const ti = (input.tool_input ?? {}) as Record<string, unknown>;
         const rows = await listAgents(true).catch(() => []);
         const r = ti.session ? await findSession(String(ti.session)).catch(() => undefined) : undefined;
         const name = r?.sessionId ? sessionLabel(r.sessionId, r.cwd, rows) : undefined;
@@ -460,6 +466,28 @@ export class Architect {
         }
       }
       return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: v.decision, permissionDecisionReason: v.reason } };
+    };
+    // Auto mode refused a step that is the owner's call (his ask setting let it go without a button, or the classifier
+    // was stricter): instead of a dead end the owner gets the card, and after his yes the same step passes the gate.
+    // A refusal of ordinary work is not his question.
+    const open = new Set<string>();
+    const denied: HookCallback = async (input) => {
+      if (input.hook_event_name !== "PermissionDenied") return {};
+      const ti = (input.tool_input ?? {}) as Record<string, unknown>;
+      const key = grantKey(input.tool_name, ti);
+      if (architectVerdict(input.tool_name, ti, true).decision !== "ask" || open.has(key)) return {};
+      open.add(key);
+      const action = input.tool_name === "Bash" ? String(ti.command ?? "") : `${input.tool_name}: ${toolBrief(input.tool_name, ti) || clip(JSON.stringify(ti), 600)}`;
+      this.push([{ type: "text", text: `<host-event time="${hhmm()}">\nВстроенная защита Claude Code не пропустила действие, которое решает владелец, — карточка с ним ушла ему в Telegram. Не повторяй его сейчас и не проси владельца запускать команду самому: разрешит — придёт сообщение, тогда повтори ту же команду дословно.\n</host-event>` }], "next", { kind: "channel", server: "architect-host" });
+      void this.d.approvals
+        .confirm({ source: ARCHITECT, action, tool: input.tool_name, input: ti, cwd: WORK, timeoutMs: 30 * 60_000 })
+        .then((d) => {
+          if (d !== "yes") return;
+          this.granted.set(key, Date.now() + 30 * 60_000);
+          this.push([{ type: "text", text: `Владелец разрешил кнопкой: ${clip(action, 300)}. Если это ещё нужно — сделай, второй раз спрашивать не придётся.` }], "next", { kind: "human" });
+        })
+        .finally(() => open.delete(key));
+      return {};
     };
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/TELEGRAM|BOT_TOKEN|ARCH_HOOK/i.test(k)) env[k] = v;
@@ -476,7 +504,7 @@ export class Architect {
         mcpServers: this.d.mcp,
         includePartialMessages: true,
         disallowedTools: ["CronCreate", "CronDelete", "ScheduleWakeup", "RemoteTrigger", "Workflow", "EnterWorktree", "ExitWorktree", "NotebookEdit", "DesignSync", "EnterPlanMode", "ExitPlanMode", "PushNotification", "Monitor"],
-        hooks: { PreToolUse: [{ hooks: [gate] }] },
+        hooks: { PreToolUse: [{ hooks: [gate] }], PermissionDenied: [{ hooks: [denied] }] },
         canUseTool,
         resume: this.sessionId,
         pathToClaudeCodeExecutable: this.d.claudePath,

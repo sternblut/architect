@@ -4,9 +4,11 @@
 //              when they are away, permissions and questions go to Telegram, and on return go back to the terminal
 import { timingSafeEqual } from "node:crypto";
 import type { Approvals, Decision, Question } from "./approvals";
-import { config, tr } from "./config";
+import { ARCH_HOME, config, tr } from "./config";
 import { stopHolds } from "./holds";
+import { classifyTool, gitBranchSync, removesThroughVariable } from "./policy";
 import { onReturn, ownerAway } from "./presence";
+import { stopsNow } from "./procs";
 import { ARCH_NOTE, deliver, listAgents, outbox, ownerWords, readTail, spinCount, toolBrief, transcriptPath, workers } from "./sessions";
 import { candidateShots } from "./shots";
 import { ownerId } from "./telegram";
@@ -28,6 +30,12 @@ const DEPLOY = /git\b.*\bpush\b|gh\s+(pr\s+merge|workflow\s+run|run\s+rerun)/;
 const LATER =
   "Это решает владелец, а он сейчас не у Mac — карточка у него в Telegram. Не жди и не повторяй это действие: займись остальной работой. Когда он ответит, его решение придёт тебе сообщением; после «да» это можно будет сделать без вопроса.";
 const HOLD_MS = 2 * 3600_000;
+// Auto mode refused what is the owner's call: the card is his, the session waits for his answer as a message
+const DENIED_NOTE =
+  "это действие решает владелец, и встроенная защита Claude Code его не пропустила — карточка с ним ушла владельцу в Telegram. Не повторяй его сейчас, не обходи и не проси владельца запускать команду самому. Если он разрешит, придёт сообщение — тогда повтори ту же команду дословно: она пройдёт.";
+// Claude Code itself asks a person about an rm through a variable; that is not the owner's question
+const LITERAL_PATH =
+  "Это не вопрос владельца: Claude Code сам просит человека подтвердить rm, путь которого собирает оболочка (пустая переменная сделала бы из него rm -rf /). Перепиши команду, подставив в rm полный путь вместо переменной (или \"${ИМЯ:?}\"), и запусти снова: так она пройдёт без вопроса. Если удаление решает владелец, шлагбаум сам спросит его кнопкой.";
 const BACK_AT_MAC = () => tr("Решите на Mac", "Decide on the Mac"); // shown on a request closed because the owner is back
 
 // API and limit errors are not questions and not worth a message
@@ -128,6 +136,9 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
             else await ui.alert(sid, cwd, `ход оборвался ошибкой API (${err}${body.error_details ? `: ${clip(String(body.error_details), 200)}` : ""}). Её работа встала посреди хода`);
             return Response.json({});
           }
+          case "/hook/denied":
+            if (!(await known(sid))) return Response.json({});
+            return Response.json(await onDenied(body, sid, cwd));
           case "/hook/notify":
             if (!(await known(sid))) return Response.json({});
             if (/elicitation/.test(String(body.notification_type))) await ui.alert(sid, cwd, "ждёт ввода в форме MCP-сервера: отсюда её не заполнить — только в терминале или в приложении Claude");
@@ -160,17 +171,25 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
       return answers ? { answers } : {};
     }
     const msgs = outbox.take(sid);
-    return msgs.length ? { additionalContext: ownerWords(msgs), queued: msgs } : {};
+    // the owner allowed exactly this with a button: allow from the hook gets it past auto mode, which refused it before
+    const allow = (granted.get(keyOf(sid, body)) ?? 0) > Date.now();
+    return { ...(allow ? { allow } : {}), ...(msgs.length ? { additionalContext: ownerWords(msgs), queued: msgs } : {}) };
   }
 
   // The owner away from the Mac: a session doesn't wait on his card, so its work doesn't stand still. It is told he
   // decides and goes on with the rest; his answer reaches it later as a message, and after a yes exactly this action
-  // passes once without asking. A push or deploy still waits for him: the host follows its pipeline from his yes.
+  // passes without asking. A push or deploy still waits for him: the host follows its pipeline from his yes.
   const granted = new Map<string, number>(); // "<session> <tool> <full input>" → until when
   const waiting = new Set<string>(); // cards sent and not answered yet
-  // the whole request, not its shortened description: a yes is for exactly what the owner saw
-  const keyOf = (sid: string, body: Record<string, any>) => `${sid}\u0000${body.tool_name}\u0000${JSON.stringify(body.tool_input ?? {})}`;
+  // the whole request, not its shortened description: a yes is for exactly what the owner saw. A command repeated
+  // after his yes may come with other words in description.
+  const keyOf = (sid: string, body: Record<string, any>) =>
+    `${sid}\u0000${body.tool_name}\u0000${JSON.stringify(body.tool_name === "Bash" ? { ...body.tool_input, description: undefined } : (body.tool_input ?? {}))}`;
   async function decideLater(body: Record<string, any>, sid: string, cwd: string) {
+    await cardLater(body, sid, cwd);
+    return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: LATER } } };
+  }
+  async function cardLater(body: Record<string, any>, sid: string, cwd: string) {
     const action = describe(body);
     const key = keyOf(sid, body);
     if (!waiting.has(key)) {
@@ -195,7 +214,6 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
         .catch((e) => log("hooks", "решение владельца не дошло до сессии", String(e)))
         .finally(() => waiting.delete(key));
     }
-    return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: LATER } } };
   }
   const allowedOnce = (sid: string, body: Record<string, any>) => {
     const key = keyOf(sid, body);
@@ -204,15 +222,29 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     return ok;
   };
   const later = async (action: string) => !DEPLOY.test(action) && (await ownerAway());
+  const viaVariable = (body: Record<string, any>) => body.tool_name === "Bash" && removesThroughVariable(String(body.tool_input?.command ?? ""));
 
   // A permission request becomes a decision brief (approvals → brief.ts), with the session's candidate shots for a deploy
   async function onPermission(body: Record<string, any>, sid: string, cwd: string, signal: AbortSignal) {
     const action = describe(body);
     if (allowedOnce(sid, body)) return permissionReply("yes");
+    if (viaVariable(body)) return permissionReply({ tell: LITERAL_PATH });
     if (await later(action)) return decideLater(body, sid, cwd);
     const decision = await approvals.confirm({ source: ui.label(sid, cwd), action, ...asked(body, sid, cwd), timeoutMs: SIX_HOURS - 120_000, signal, threadId: await ui.threadFor(sid, cwd) });
     ui.permissionDecided(sid, cwd, action, decision);
     return permissionReply(decision);
+  }
+
+  // Auto mode refused a step the gate leaves to the owner (his ask setting let it go without a button, or the classifier
+  // was stricter): instead of a dead end the owner gets the card, and after his yes the same step passes (onPre).
+  // A refusal of ordinary work is not his question: the session finds another way.
+  async function onDenied(body: Record<string, any>, sid: string, cwd: string) {
+    // the gate's verdict on all of the owner's points, whatever his ask setting
+    const ctx = { cwd, archHome: ARCH_HOME, hostingPattern: config.hostingPattern, spendPattern: config.spendPattern, keychainService: config.keychainService, branch: gitBranchSync, stops: stopsNow };
+    if (classifyTool(String(body.tool_name ?? ""), body.tool_input ?? {}, ctx).decision !== "ask") return {};
+    if (!waiting.has(keyOf(sid, body))) outbox.push(sid, `${ARCH_NOTE}${DENIED_NOTE}`);
+    await cardLater(body, sid, cwd);
+    return {};
   }
 
   async function onStop(body: Record<string, any>, sid: string, cwd: string) {
@@ -231,6 +263,7 @@ export function startHookServer(secret: string, approvals: Approvals, ui: HookUI
     if (!ownerId() || !(await ownerAway())) return {}; // not paired, or the owner is at the Mac: the terminal decides
     const action = describe(body);
     if (allowedOnce(sid, body)) return permissionReply("yes");
+    if (viaVariable(body)) return permissionReply({ tell: LITERAL_PATH });
     if (await later(action)) return decideLater(body, sid, cwd);
     const w = watch(reqSignal);
     try {

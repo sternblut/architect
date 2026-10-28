@@ -239,6 +239,8 @@ export function stripPrefixes(t: string[]): string[] {
 
 const SAFE_RM =
   /^(\.\/)?((dist|build|out|\.cache|coverage|test-results|playwright-report|node_modules|tmp|\.tmp|artifacts|\.next|\.astro|\.turbo|\.parcel-cache|__pycache__|\.pytest_cache|\.venv-tmp)(\/|$))|^(\/tmp\/|\/private\/tmp\/|\/private\/var\/folders\/|\$TMPDIR\/|\$\{TMPDIR\}\/|\$CLAUDE_JOB_DIR\/tmp\/|\$\{CLAUDE_JOB_DIR\}\/tmp\/)|^(~|\/Users\/[^/]+)\/\.claude\/jobs\/[\w-]+\/tmp(\/|$)|\.pyc$/;
+// Temp folders, as in SAFE_RM: the system's, Claude Code's and a background session's own
+const TEMP = /^(\/tmp\/|\/private\/tmp\/|\/private\/var\/folders\/|\$TMPDIR\/|\$\{TMPDIR\}\/|\$CLAUDE_JOB_DIR\/tmp\/|\$\{CLAUDE_JOB_DIR\}\/tmp\/)|^(~|\/Users\/[^/]+)\/\.claude\/jobs\/[\w-]+\/tmp(\/|$)/;
 
 // Inline code in another language (python3 -c, node -e, python3 - <<EOF): ask only about deleting and the owner's
 // business inside it (push, merge, deploy, email). Writing files, network and running programs are ordinary research
@@ -304,6 +306,8 @@ function ghRules(t: string[], raw: string): Verdict {
   if (a === "repo" && ["delete", "archive", "rename", "edit", "create", "transfer"].includes(b)) return ask(`gh repo ${b} — меняет репозитории`);
   if ((a === "secret" || a === "variable") && ["set", "delete", "remove"].includes(b)) return ask(`gh ${a} ${b} — секреты и переменные GitHub`);
   if (a === "api") {
+    // rendering Markdown (POST /markdown) changes nothing on GitHub
+    if (/^\/?markdown(\/raw)?$/.test(b ?? "")) return OK;
     const method = raw.match(/(?:-X|--method)[\s=]*([A-Za-z]+)/)?.[1]?.toUpperCase();
     const implicitPost = /\s(-f|-F|--field|--raw-field|--input)\b/.test(raw);
     if ((method && method !== "GET") || (!method && implicitPost)) return ask("запись через GitHub API");
@@ -403,11 +407,15 @@ function split(t0: string[]) {
 // impersonate the owner). Everything else is ordinary work: sessions may do anything except delete, push to main,
 // deploy, spend money or email people.
 const SENSITIVE_TARGET =
-  /(^|\/)\.(ssh|gnupg|aws|config|docker|kube)(\/|$)|(^|\/)\.claude\/(settings[\w.-]*\.json$|CLAUDE\.md$|keybindings\.json$|hooks|plugins|agents|commands|skills|\.credentials)|(^|\/)\.claude\.json$|authorized_keys|id_(rsa|ed25519|ecdsa)|(^|\/)\.(zshrc|zprofile|zshenv|zlogin|zlogout|bashrc|bash_profile|profile|login|netrc|npmrc|pypirc|gitconfig)$|(^|\/)\.env(\.\w+)?$|\.(pem|key|p12)$|(^|\/)Library\/(LaunchAgents|LaunchDaemons|Keychains)(\/|$)|^\/(private\/)?(etc|Library|System|usr|bin|sbin)\//;
+  /(^|\/)\.(ssh|gnupg|aws|config|docker|kube)(\/|$)|(^|\/)\.claude\/(settings[\w.-]*\.json$|CLAUDE\.md$|keybindings\.json$|hooks|plugins|agents|commands|skills|\.credentials)|(^|\/)\.claude\.json$|authorized_keys|id_(rsa|ed25519|ecdsa)|(^|\/)\.(zshrc|zprofile|zshenv|zlogin|zlogout|bashrc|bash_profile|profile|login|netrc|npmrc|pypirc|gitconfig)$|(^|\/)Library\/(LaunchAgents|LaunchDaemons|Keychains)(\/|$)|^\/(private\/)?(etc|Library|System|usr|bin|sbin)\//;
+// Keys, certificates and .env: in the session's folder or a temp folder they are its own (a test key, a downloaded
+// certificate); elsewhere they may be someone's live secrets
+const SECRET_FILE = /(^|\/)\.env(\.\w+)?$|\.(pem|key|p12)$/;
 function targetVerdict(w: string, ctx: PolicyContext, what: "перезапись" | "дописывание"): Verdict {
   if (/^\/dev\/(null|stdout|stderr|tty)$|^&?[0-9]$/.test(w)) return OK;
   if (SENSITIVE_TARGET.test(w)) return ask(`${what} служебного файла`);
   const abs = w.startsWith("~") ? join(homedir(), w.slice(1)) : resolve(ctx.cwd, w);
+  if (SECRET_FILE.test(w) && !TEMP.test(w) && !TEMP.test(abs) && ![ctx.cwd, real(ctx.cwd)].some((r) => abs.startsWith(`${r}/`))) return ask(`${what} служебного файла`);
   if (ctx.cwd !== ctx.archHome && (abs === ctx.archHome || abs.startsWith(ctx.archHome + "/"))) return ask("запись в папку архитектора");
   return OK;
 }
@@ -427,7 +435,8 @@ function stopRule(cmd: "pkill" | "killall", args: string[], ctx: PolicyContext):
   // parent: a Claude Code process's own tools and MCP servers
   if (hits.some((p) => isClaude(p.args) || isClaude(p.parent ?? "") || p.args.includes(ctx.archHome) || SYSTEM_PROC.test(p.name))) return ask("остановка сессий Claude Code, хоста или macOS");
   const roots = [ctx.cwd, real(ctx.cwd)];
-  if (hits.some((p) => !p.cwd || !roots.some((r) => p.cwd === r || p.cwd!.startsWith(`${r}/`)))) return ask("остановка процессов вне папки сессии");
+  // a helper it started in a temp folder (a preview server in its job folder) is its own too
+  if (hits.some((p) => !p.cwd || !(roots.some((r) => p.cwd === r || p.cwd!.startsWith(`${r}/`)) || TEMP.test(`${p.cwd}/`)))) return ask("остановка процессов вне папки сессии");
   return OK;
 }
 const real = (p: string) => {
@@ -559,7 +568,7 @@ function commandRules(t0: string[], ctx: PolicyContext, hosting: RegExp, depth: 
   if (/^(chmod|chown|chflags)$/.test(cmd) && t.some((x) => /^-[a-zA-Z]*R/.test(x))) v = worst(v, ask("рекурсивная смена прав"));
   // exfiltration through an ordinary request: command substitution or data in an outbound URL
   if (/^(curl|wget|http|xh)$/.test(cmd)) {
-    const outbound = t.some((x) => /^(https?:\/\/)?(?!localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)[\w.-]+\.[a-z]{2,}([:/?]|$)/i.test(x) || /^https?:\/\/\d+\.\d+\.\d+\.\d+/.test(x));
+    const outbound = t.some((x) => /^(https?:\/\/)?(?!localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)[\w.-]+\.[a-z]{2,}([:/?]|$)/i.test(x) || /^https?:\/\/(?!127\.|0\.0\.0\.0)\d+\.\d+\.\d+\.\d+/.test(x)); // this Mac's own addresses are not outbound
     // Data leaving the Mac: command substitution anywhere, or a variable in the query or the request body.
     // A variable in the URL path is an ordinary download (…/$REF/$path).
     const leaks = t.some((x, i) => /\$\(|`/.test(x) || (/\$\{?[A-Za-z_]/.test(x) && (/[?=#&][^\s]*\$\{?[A-Za-z_]/.test(x) || /^(-d|--data(-[\w-]+)?|-F|--form|-T|--upload-file|--json)$/.test(t[i - 1] ?? ""))));
@@ -602,7 +611,8 @@ function classifyBashDepth(command: string, ctx: PolicyContext, depth: number): 
   const { commands, nested, piped } = parseShell(command);
   let v: Verdict = OK;
   // Variables set in the same line (S="/private/tmp/…" && rm "$S"/*.png) are substituted, so cleaning up drafts in a
-  // temp folder needs no button. Values that contain substitutions are not used.
+  // temp folder needs no button. Values that contain substitutions are not used, except a temp folder's own variable
+  // at the start (D="$CLAUDE_JOB_DIR/tmp/x"). "${S:?}" stops the shell when S is empty and stands for S.
   const vars = new Map<string, string>();
   commands.forEach((c, i) => {
     const sets = c[0] === "export" ? c.slice(1) : c;
@@ -612,10 +622,10 @@ function classifyBashDepth(command: string, ctx: PolicyContext, depth: number): 
         const val = w.slice(w.indexOf("=") + 1);
         // $(mktemp -d) without a path template is always a fresh temp folder: writing there needs no question
         const tmp = val.replace(/^\$\(mktemp(?:\s+-d)?(?:\s+-t\s+[\w.-]+)?\)/, "/private/tmp/mktemp");
-        if (/[$`]/.test(tmp)) vars.delete(k);
+        if (/[$`]/.test(tmp.replace(/^(\$CLAUDE_JOB_DIR\/tmp|\$\{CLAUDE_JOB_DIR\}\/tmp|\$TMPDIR|\$\{TMPDIR\})(?=\/|$)/, ""))) vars.delete(k);
         else vars.set(k, tmp);
       }
-    const t = vars.size ? c.map((w) => w.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, a, b) => vars.get(a ?? b) ?? m)) : c;
+    const t = vars.size ? c.map((w) => w.replace(/\$\{([A-Za-z_]\w*)(?::\?[^}]*)?\}|\$([A-Za-z_]\w*)/g, (m, a, b) => vars.get(a ?? b) ?? m)) : c;
     v = worst(v, commandRules(t, ctx, hosting, depth, piped?.has(i)));
   });
   if (depth < 4) for (const n of nested) v = worst(v, classifyBashDepth(n, ctx, depth + 1));
@@ -629,6 +639,15 @@ export function classifyBash(command: string, ctx: PolicyContext): Verdict {
 // The verdict of one command from parseShell; the decision brief uses it to find the command in a chain that asks
 export function classifyCommand(t: string[], ctx: PolicyContext): Verdict {
   return commandRules(t, ctx, new RegExp(ctx.hostingPattern, "i"), 0);
+}
+
+// An rm whose target the shell builds ("$D"/*, $(pwd)): Claude Code wants a person for it however harmless, since an
+// empty variable would make it rm -rf /. With the literal path, or "${D:?}", it passes that check.
+export function removesThroughVariable(command: string): boolean {
+  return parseShell(command).commands.some((c) => {
+    const t = stripPrefixes(c.filter((x) => !x.startsWith("\u0000")));
+    return /^(rm|rmdir|unlink)$/.test(basename(t[0] ?? "")) && t.slice(1).some((x) => !x.startsWith("-") && (x === "" || /[$`]/.test(x.replace(/\$\{[A-Za-z_]\w*:\?[^}]*\}/g, ""))));
+  });
 }
 
 // Which of the owner's five points a gate question belongs to. Other questions protect the Mac and the bot itself

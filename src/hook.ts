@@ -7,7 +7,7 @@ import { classifyTool, gitBranchSync } from "./policy";
 import { stopsNow } from "./procs";
 
 type HookInput = { session_id: string; cwd: string; tool_name: string; tool_input: Record<string, unknown>; hook_event_name: string };
-type HostReply = { additionalContext?: string; answers?: Record<string, string> };
+type HostReply = { additionalContext?: string; answers?: Record<string, string>; allow?: boolean };
 
 function print(o: unknown) {
   if (o) process.stdout.write(JSON.stringify(o));
@@ -31,9 +31,10 @@ async function askHost(input: HookInput, waitMs: number): Promise<HostReply> {
 
 const input = (await Bun.stdin.json()) as HookInput;
 
-// Other events (permissions, turn ends, failures, notifications) go to the host as they are; no answer, no effect
+// Other events (permissions, auto mode refusals, turn ends, failures, notifications) go to the host as they are; no
+// answer, no effect
 if (input.hook_event_name !== "PreToolUse") {
-  const route = ({ PermissionRequest: "permission", Stop: "stop", StopFailure: "stopfail", Notification: "notify" } as Record<string, string>)[input.hook_event_name];
+  const route = ({ PermissionRequest: "permission", PermissionDenied: "denied", Stop: "stop", StopFailure: "stopfail", Notification: "notify" } as Record<string, string>)[input.hook_event_name];
   if (!route) print(null);
   const wait = route === "permission" ? 6 * 3600_000 - 60_000 : route === "stop" ? 55_000 : 10_000;
   setTimeout(() => print(null), wait + 5000);
@@ -70,6 +71,8 @@ if (verdict.decision === "deny") print(out({ permissionDecision: "deny", permiss
 const host = await askHost(input, isQuestion ? 6 * 3600_000 - 60_000 : 5000);
 
 if (isQuestion && host.answers) print(out({ permissionDecision: "allow", updatedInput: { ...input.tool_input, answers: host.answers } }));
+// the owner said yes to exactly this with a button: allow from the hook gets it past auto mode's classifier
+if (host.allow) print(out({ permissionDecision: "allow", ...(host.additionalContext ? { additionalContext: host.additionalContext } : {}) }));
 if (verdict.decision === "ask")
   print(out({ permissionDecision: "ask", permissionDecisionReason: `Нужно «да» владельца в Telegram: ${verdict.reason}`, ...(host.additionalContext ? { additionalContext: host.additionalContext } : {}) }));
 if (host.additionalContext) print(out({ additionalContext: host.additionalContext }));
